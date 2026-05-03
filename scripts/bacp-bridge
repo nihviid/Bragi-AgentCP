@@ -169,6 +169,22 @@ def make_message_id(project, role):
     return f"{now_utc()}~{project}~{role}~p{pid}~{nonce}"
 
 
+def parse_filename_meta(filename):
+    """Extract project, role, and timestamp from a standard bridge filename.
+    Filename format: TIMESTAMP~PROJECT~ROLE~PID~NONCE.TYPE.json
+    Returns dict with keys: ts, project, role (or None if unparsable)."""
+    base = filename.replace(".json", "")
+    parts = base.split("~")
+    meta = {"ts": None, "project": None, "role": None}
+    if len(parts) >= 1:
+        meta["ts"] = parts[0]
+    if len(parts) >= 2:
+        meta["project"] = parts[1]
+    if len(parts) >= 3:
+        meta["role"] = parts[2]
+    return meta
+
+
 def ensure_dirs():
     for d in [INBOX_MC, OUTBOX_CM, ARCHIVE_SENT, ARCHIVE_RECV,
               DECISIONS_PENDING, DECISIONS_ANSWERED]:
@@ -332,11 +348,13 @@ def cmd_next_report():
     path = files[0]
     filename = os.path.basename(path)
     data = read_json(path)
-    proj = data.get("project", "?")
-    dtype = data.get("direction", "?")
+    fm = parse_filename_meta(filename)
+    proj = data.get("project") or fm["project"] or "(not set)"
+    dtype = data.get("direction") or fm["role"] or "(not set)"
     mtype = data.get("type", "?")
     needs_resp = data.get("requires_response", "?")
-    ts = data.get("created_at", "?")
+    ts = data.get("created_at") or fm["ts"] or "(not set)"
+    msg_id = data.get("id") or filename.split(".")[0] if "." in filename else filename
 
     errors = validate_report(data)
 
@@ -353,7 +371,7 @@ def cmd_next_report():
         print(sep)
         print(f"PENDING REPORT: {filename}")
         print(f"Project: {proj} | Direction: {dtype} | Type: {mtype}")
-        print(f"Created: {ts} | Requires response: {needs_resp}")
+        print(f"Created: {ts} | ID: {msg_id} | Requires response: {needs_resp}")
         if errors:
             print(f"Warnings: {'; '.join(errors)}")
         print(sep)
@@ -609,9 +627,11 @@ def cmd_next_instruction():
     path = files[0]
     filename = os.path.basename(path)
     data = read_json(path)
+    fm = parse_filename_meta(filename)
     cmd = data.get("command", data.get("type", "?"))
-    proj = data.get("project", "?")
-    ts = data.get("created_at", "?")
+    proj = data.get("project") or fm["project"] or "(not set)"
+    ts = data.get("created_at") or fm["ts"] or "(not set)"
+    msg_id = data.get("id") or filename.split(".")[0] if "." in filename else filename
 
     if JSON_MODE:
         print(json.dumps({
@@ -625,7 +645,7 @@ def cmd_next_instruction():
         print(sep)
         print(f"PENDING INSTRUCTION: {filename}")
         print(f"Project: {proj} | Command: {cmd}")
-        print(f"Created: {ts}")
+        print(f"Created: {ts} | ID: {msg_id}")
         print(sep)
         print("")
         print(json.dumps(data, indent=2))
