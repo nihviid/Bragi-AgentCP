@@ -81,6 +81,8 @@ Reports are never deleted. Archived reports remain as audit trail.
 | Command | Reads | Writes | Purpose |
 |---------|-------|--------|---------|
 | `status [--json]` | All queues | nothing | Show bridge health and queue counts |
+| `list-instructions [--json]` | inbox/ | nothing | List all pending manager instructions with metadata and age |
+| `list-reports [--json]` | outbox/ | nothing | List all pending executor reports with metadata and age |
 | `next-report [--json]` | outbox/ | nothing | Display oldest pending CLI report |
 | `next-instruction [--json]` | inbox/ | nothing | Display oldest pending manager instruction |
 | `write-instruction [--archive-source <id>]` | stdin | inbox/ | Write validated instruction from pipe. Optionally archives source report after write. |

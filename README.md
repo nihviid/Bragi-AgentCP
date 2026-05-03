@@ -54,6 +54,8 @@ That is the entire loop. Each step is one command.
 | Command | Purpose |
 |---------|---------|
 | `status [--json]` | Show bridge health and queue counts |
+| `list-instructions [--json]` | List all pending manager instructions |
+| `list-reports [--json]` | List all pending executor reports |
 | `next-report [--json]` | Show oldest pending CLI-to-manager report |
 | `next-instruction [--json]` | Show oldest pending manager-to-CLI instruction |
 | `write-instruction [--archive-source <id>]` | Write validated manager instruction from stdin |
