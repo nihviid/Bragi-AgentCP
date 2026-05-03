@@ -9,6 +9,7 @@ Commands:
   next-report         Show oldest pending CLI-to-manager report
   next-instruction    Show oldest pending manager-to-CLI instruction
   write-instruction   Write manager instruction (from stdin) to inbox
+  write-report        Write executor status report (from stdin) to outbox
   decisions           Show pending and answered decisions
   archive <id>        Move processed message to archive
   archive-all <queue> Archive all pending messages in a queue
@@ -21,6 +22,7 @@ Usage:
   bacp-bridge next-report [--json]
   bacp-bridge next-instruction [--json]
   echo '<json>' | bacp-bridge write-instruction [--archive-source <id>]
+  echo '<json>' | bacp-bridge write-report [--ack-source <id>]
   bacp-bridge decisions [--json]
   bacp-bridge archive <path-or-id>
   bacp-bridge archive-all <queue>
@@ -226,6 +228,37 @@ def validate_report(data):
     return errors
 
 
+REPORT_PAYLOAD_REQUIRED = ["project", "task", "repo", "next_recommended_action"]
+REPORT_TASK_REQUIRED = ["description", "status"]
+REPORT_REPO_REQUIRED = ["branch", "last_commit", "working_tree"]
+
+
+def validate_report_payload(data):
+    """Validate fields for write-report input. Returns list of errors."""
+    errors = []
+    if not isinstance(data, dict):
+        errors.append("Root value must be a JSON object")
+        return errors
+    for field in REPORT_PAYLOAD_REQUIRED:
+        if field not in data:
+            errors.append(f"Missing required field: '{field}'")
+    task = data.get("task", {})
+    if isinstance(task, dict):
+        for field in REPORT_TASK_REQUIRED:
+            if field not in task:
+                errors.append(f"Missing required field: 'task.{field}'")
+    else:
+        errors.append("'task' must be a JSON object")
+    repo = data.get("repo", {})
+    if isinstance(repo, dict):
+        for field in REPORT_REPO_REQUIRED:
+            if field not in repo:
+                errors.append(f"Missing required field: 'repo.{field}'")
+    else:
+        errors.append("'repo' must be a JSON object")
+    return errors
+
+
 # ── Commands ───────────────────────────────────────────────────────────
 
 def cmd_status():
@@ -385,6 +418,68 @@ def cmd_write_instruction(archive_source=None):
             log("write-instruction", f"source archived: {old_path}", "ok")
         else:
             print(f"Warning: source message '{archive_source}' not found.")
+
+
+def cmd_write_report(ack_source=None):
+    """Write executor status report to outbox/cli-to-manager/."""
+    guard_not_stopped()
+
+    try:
+        raw = sys.stdin.read()
+    except KeyboardInterrupt:
+        die("Interrupted.")
+
+    if not raw or not raw.strip():
+        die("No input received on stdin. Pipe report JSON with project_state fields.")
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        die(f"Invalid JSON on stdin: {e}")
+
+    errors = validate_report_payload(data)
+    if errors:
+        for e in errors:
+            print(f"  Validation error: {e}", file=sys.stderr)
+        die("Report rejected. Fix errors and try again.")
+
+    project = data.get("project", "bacp")
+    mid = make_message_id(project, "executor")
+    now_iso = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    report = {
+        "id": mid,
+        "project": project,
+        "direction": "cli_to_manager",
+        "type": "status_report",
+        "created_at": now_iso,
+        "from": "executor",
+        "to": "manager",
+        "payload": {
+            "project_state": data
+        }
+    }
+
+    filename = f"{mid}.status.json"
+    dest = os.path.join(OUTBOX_CM, filename)
+
+    try:
+        with open(dest, "w") as f:
+            json.dump(report, f, indent=2)
+    except OSError as e:
+        die(f"Cannot write to {dest}: {e}")
+
+    print(f"Written: {dest}")
+    log("write-report", dest, "ok")
+
+    if ack_source:
+        old_path = _resolve_message_path(ack_source)
+        if old_path:
+            _move_to_archive(old_path)
+            print(f"Archived source: {old_path}")
+            log("write-report", f"source archived: {old_path}", "ok")
+        else:
+            print(f"Warning: source message '{ack_source}' not found.")
 
 
 def _resolve_message_path(target):
@@ -716,6 +811,9 @@ def main():
         elif command == "write-instruction":
             archive_src = consume_flag("--archive-source")
             cmd_write_instruction(archive_source=archive_src)
+        elif command == "write-report":
+            ack_src = consume_flag("--ack-source")
+            cmd_write_report(ack_source=ack_src)
         elif command == "next-instruction":
             cmd_next_instruction()
         elif command == "decisions":

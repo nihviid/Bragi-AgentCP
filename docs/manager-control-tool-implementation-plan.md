@@ -25,6 +25,7 @@ No dependencies. No install step. Works on any system with Python 3.
 | `status` | P0 | Done | Reads all queue directories, prints summary + STOP state + latest log. Supports `--json`. |
 | `next-report` | P0 | Done | Shows oldest outbox file with metadata, validation warnings. Supports `--json`. |
 | `write-instruction` | P0 | Done | Reads stdin, validates, writes to inbox with generated filename. Supports `--archive-source <id>`. |
+| `write-report` | P2 | Done | Reads stdin, validates required project_state fields, auto-fills envelope (id, direction, type, created_at, from, to), writes to outbox. Supports `--ack-source <id>`. |
 | `next-instruction` | P1 | Done | Shows oldest inbox file with metadata. Supports `--json`. |
 | `decisions` | P1 | Done | Lists pending and answered decisions (last 10). Supports `--json`. |
 | `stop` | P1 | Done | Writes STOP with interactive confirmation. |
@@ -33,7 +34,7 @@ No dependencies. No install step. Works on any system with Python 3.
 | `ack` | P1 | Done | Alias for archive with ack semantics. |
 | `archive-all` | P2 | Done | Bulk archive all messages in a queue (`reports`, `instructions`, `decisions`) with y/N confirmation. |
 
-**10 commands implemented.** All P0, P1, and selected P2 complete.
+**11 commands implemented.** All P0, P1, and P2 complete.
 
 ---
 

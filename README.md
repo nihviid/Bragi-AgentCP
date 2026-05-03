@@ -37,6 +37,7 @@ No directory navigation. No filename construction. No manual archiving.
 | `next-report [--json]` | Show oldest pending CLI-to-manager report |
 | `next-instruction [--json]` | Show oldest pending manager-to-CLI instruction |
 | `write-instruction [--archive-source <id>]` | Write validated manager instruction from stdin |
+| `write-report [--ack-source <id>]` | Write executor status report from stdin to outbox |
 | `decisions [--json]` | Show pending/answered decisions |
 | `archive <id>` | Move processed message to archive |
 | `archive-all <queue>` | Archive all pending messages in a queue (reports, instructions, decisions) |
@@ -66,7 +67,11 @@ echo '{"command":"continue","instruction":"...","model_selection":{...}}' | \
 # Read pending manager instruction
 ./scripts/bacp-bridge next-instruction
 
-# Archive a consumed message
+# Write executor status report to outbox (after completing work)
+echo '{"project":"bacp","task":{"id":"...","description":"...","status":"complete"},"repo":{"branch":"agent/bootstrap-discovery","last_commit":"abc1234","working_tree":"clean"},"next_recommended_action":"..."}' | \
+  ./scripts/bacp-bridge write-report
+
+# Archive a consumed message (instruction or report)
 ./scripts/bacp-bridge ack <message-id-or-path>
 ```
 

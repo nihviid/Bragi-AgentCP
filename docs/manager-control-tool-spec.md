@@ -84,6 +84,7 @@ Reports are never deleted. Archived reports remain as audit trail.
 | `next-report [--json]` | outbox/ | nothing | Display oldest pending CLI report |
 | `next-instruction [--json]` | inbox/ | nothing | Display oldest pending manager instruction |
 | `write-instruction [--archive-source <id>]` | stdin | inbox/ | Write validated instruction from pipe. Optionally archives source report after write. |
+| `write-report [--ack-source <id>]` | stdin | outbox/ | Write executor status report from pipe. Auto-fills id, direction, type, created_at, from, to. Validates required project_state fields. Optionally acks source instruction. |
 | `decisions [--json]` | decisions/ | nothing | Show pending/answered decisions |
 | `archive <id>` | any queue | archive/ | Move processed message to archive |
 | `archive-all <queue>` | queue | archive/ | Bulk archive all pending messages in a queue (reports, instructions, or decisions) |
