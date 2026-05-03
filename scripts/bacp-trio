@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BACP Trio — iTerm2 multi-agent layout for Portal development.
+"""BACP Trio — iTerm2 multi-agent layout for any Bragi project.
 
 Opens one iTerm2 window with three panes:
   ┌──────────────────┬──────────────────────────┐
@@ -11,10 +11,12 @@ Opens one iTerm2 window with three panes:
   └──────────────────┴──────────────────────────┘
 
 Usage:
-  bacp-trio                    # Launch Portal trio
-  bacp-trio --project appkit   # Launch AppKit trio
-  bacp-trio --project msdk     # Launch MSDK trio
-  bacp-trio --help             # Show help
+  bacp-trio portal          Launch Portal trio (default)
+  bacp-trio appkit          Launch AppKit trio
+  bacp-trio msdk            Launch mSDK trio
+  bacp-trio agentcp         Launch AgentCP trio
+  bacp-trio router          Launch Router trio (clone required)
+  bacp-trio --help          Show help
 """
 
 import os
@@ -28,12 +30,23 @@ except ImportError:
     print("Run: pip3 install iterm2", file=sys.stderr)
     sys.exit(1)
 
-# Project paths
+# Project home directories
+HOME = os.path.expanduser("~/Desktop/Antigravity")
+
 PROJECTS = {
-    "portal": os.path.expanduser("~/Desktop/Antigravity/Bragi-portal"),
-    "appkit": os.path.expanduser("~/Desktop/Antigravity/Bragi-AppKit"),
-    "msdk": os.path.expanduser("~/Desktop/Antigravity/msdk-ios"),
-    "router": None,  # TBD
+    "agentcp": os.path.join(HOME, "Bragi-AgentCP"),
+    "portal":  os.path.join(HOME, "Bragi-portal"),
+    "appkit":  os.path.join(HOME, "Bragi-AppKit"),
+    "msdk":    os.path.join(HOME, "msdk-ios"),
+    "router":  os.path.join(HOME, "Bragi-RouterAI"),
+}
+
+PROJECT_NAMES = {
+    "agentcp": "AgentCP",
+    "portal":  "Portal",
+    "appkit":  "AppKit",
+    "msdk":    "mSDK",
+    "router":  "Router",
 }
 
 BACP_ROOT = os.path.expanduser("~/.bragi/agent-control-plane")
@@ -56,22 +69,47 @@ async def setup_pane(session, title, cwd, startup_cmds=None):
 async def main(connection):
     app = await iterm2.async_get_app(connection)
 
-    # Determine project
-    project = "portal"
+    # Determine project from --project flag or first positional arg
+    project = None
     if "--project" in sys.argv:
         idx = sys.argv.index("--project")
         if idx + 1 < len(sys.argv):
             project = sys.argv[idx + 1].lower()
+    elif len(sys.argv) >= 2 and sys.argv[1] in PROJECTS:
+        project = sys.argv[1].lower()
 
-    if project not in PROJECTS:
-        print(f"Unknown project: {project}", file=sys.stderr)
-        print(f"Valid: {', '.join(PROJECTS.keys())}", file=sys.stderr)
-        sys.exit(1)
+    if not project or project not in PROJECTS:
+        print(f"Usage: bacp-trio [project]", file=sys.stderr)
+        print(f"", file=sys.stderr)
+        print(f"Projects:", file=sys.stderr)
+        for name in sorted(PROJECTS.keys()):
+            path = PROJECTS[name]
+            if path and os.path.isdir(path):
+                print(f"  {name}", file=sys.stderr)
+            elif path:
+                print(f"  {name}  (needs clone: gh repo clone nihviid/{path.split('/')[-1]} {path})", file=sys.stderr)
+            else:
+                print(f"  {name}  (no path set)", file=sys.stderr)
+        print(f"", file=sys.stderr)
+        print(f"Examples:", file=sys.stderr)
+        print(f"  bacp-trio portal", file=sys.stderr)
+        print(f"  bacp-trio appkit", file=sys.stderr)
+        print(f"  bacp-trio msdk", file=sys.stderr)
+        print(f"  bacp-trio agentcp", file=sys.stderr)
+        return
 
     project_path = PROJECTS[project]
-    if project_path and not os.path.isdir(project_path):
-        print(f"Warning: Project path not found: {project_path}", file=sys.stderr)
-        print("Will still create layout, but cd may fail.", file=sys.stderr)
+    project_name = PROJECT_NAMES[project]
+
+    if not project_path:
+        print(f"Error: No path configured for {project_name}.", file=sys.stderr)
+        return
+
+    missing = not os.path.isdir(project_path)
+    if missing:
+        print(f"Warning: {project_name} not cloned locally.", file=sys.stderr)
+        print(f"  Clone it first: gh repo clone nihviid/{project_path.split('/')[-1]} {project_path}", file=sys.stderr)
+        print(f"  Layout will still open, but cd may fail.\n", file=sys.stderr)
 
     # Ensure manager isolation directory exists
     os.makedirs(MANAGER_ROOT, exist_ok=True)
@@ -136,8 +174,11 @@ if __name__ == "__main__":
 
     try:
         iterm2.run_until_complete(main)
-    except iterm2.ConnectionError as e:
-        print(f"Error: Cannot connect to iTerm2.", file=sys.stderr)
-        print(f"Make sure iTerm2 is running and Python API is enabled:", file=sys.stderr)
-        print(f"  iTerm2 → Settings → General → Magic → Enable Python API", file=sys.stderr)
+    except Exception as e:
+        if "Connection" in type(e).__name__:
+            print(f"Error: Cannot connect to iTerm2.", file=sys.stderr)
+            print(f"Make sure iTerm2 is running and Python API is enabled:", file=sys.stderr)
+            print(f"  iTerm2 → Settings → General → Magic → Enable Python API", file=sys.stderr)
+        else:
+            print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
