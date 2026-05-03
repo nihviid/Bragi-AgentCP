@@ -1000,6 +1000,7 @@ def cmd_watch():
     print("  Ctrl+C to stop")
     print("━" * 60)
     last_activity_lines = 0
+    last_alerts = set()
     try:
         while True:
             os.system("clear")
@@ -1014,6 +1015,24 @@ def cmd_watch():
             da = count_files(DECISIONS_ANSWERED)
             print(f"  Queue:  {inbox} pending instructions  |  {outbox} pending reports  |  {dp} pending decisions  |  {da} answered")
             print("")
+
+            # Notify flag alerts
+            alerts = set()
+            for f in os.listdir(ROOT):
+                if f.startswith("NOTIFY-"):
+                    alerts.add(f)
+            if alerts != last_alerts and alerts:
+                print("\a")  # terminal bell
+            last_alerts = alerts
+            for flag in sorted(alerts):
+                parts = flag.split("-")
+                target = parts[1] if len(parts) > 1 else "?"
+                proj = parts[2] if len(parts) > 2 else "?"
+                print(f"  ⚠  NOTIFY-{target}-{proj} — {target.lower()} has pending work!")
+            if alerts:
+                print("  Run: bacp-bridge next-instruction  (executor)")
+                print("  Run: bacp-bridge next-report       (manager)")
+                print("")
 
             # Heartbeat status
             print("  Agents:")
