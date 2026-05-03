@@ -22,6 +22,7 @@ import subprocess
 BACP_ROOT = os.environ.get("BACP_ROOT", os.path.expanduser("~/.bragi/agent-control-plane"))
 INBOX = os.path.join(BACP_ROOT, "inbox", "manager-to-cli")
 OUTBOX = os.path.join(BACP_ROOT, "outbox", "cli-to-manager")
+NOTIFY_FLAG = os.path.join(BACP_ROOT, "NOTIFY-EXECUTOR")
 
 API_KEY = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY") or ""
 API_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
@@ -321,16 +322,15 @@ if __name__ == "__main__":
     if "--watch" in sys.argv:
         import time as _time
         interval = 5
-        processed = set()
         print(f"Executor watch started (polling every {interval}s). Ctrl+C to stop.")
         try:
             while True:
-                files = list_json_files(INBOX)
-                for f in files:
-                    fname = os.path.basename(f)
-                    if fname not in processed:
-                        processed.add(fname)
-                        main()
+                if os.path.isfile(NOTIFY_FLAG):
+                    try:
+                        os.remove(NOTIFY_FLAG)
+                    except OSError:
+                        pass
+                    main()
                 _time.sleep(interval)
         except KeyboardInterrupt:
             print("\nExecutor watch stopped.")

@@ -23,6 +23,7 @@ MEMORY_DIR = os.path.join(BACP_ROOT, "memory")
 MEMORY_LOG = os.path.join(MEMORY_DIR, "manager-log.jsonl")
 OUTBOX = os.path.join(BACP_ROOT, "outbox", "cli-to-manager")
 INBOX = os.path.join(BACP_ROOT, "inbox", "manager-to-cli")
+NOTIFY_FLAG = os.path.join(BACP_ROOT, "NOTIFY-MANAGER")
 
 API_KEY = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY") or ""
 API_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
@@ -267,18 +268,16 @@ def main():
 if __name__ == "__main__":
     if "--watch" in sys.argv:
         import time as _time
-        interval = 10
-        processed = set()
+        interval = 5
         print(f"Manager watch started (polling every {interval}s). Ctrl+C to stop.")
         try:
             while True:
-                report = find_latest_report()
-                if report and report["filename"] not in processed:
-                    processed.add(report["filename"])
+                if os.path.isfile(NOTIFY_FLAG):
+                    try:
+                        os.remove(NOTIFY_FLAG)
+                    except OSError:
+                        pass
                     main()
-                else:
-                    if not report:
-                        log("No pending reports.")
                 _time.sleep(interval)
         except KeyboardInterrupt:
             print("\nManager watch stopped.")
