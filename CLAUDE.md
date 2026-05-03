@@ -13,10 +13,10 @@ The manager decides what to do. The CLI executes. The bridge is the only communi
 
 ---
 
-## Active Objective: Manager-Control Tool
+## Active Objective: Manager-Control Tool (Phase 2 — Complete)
 
 **Branch:** `agent/bootstrap-discovery`
-**Tool:** `scripts/bacp-bridge` (10 commands)
+**Tool:** `scripts/bacp-bridge` (13 commands)
 **Spec:** `docs/manager-control-tool-spec.md`
 **Plan:** `docs/manager-control-tool-implementation-plan.md`
 

@@ -8,7 +8,7 @@
 
 ## 1. Current Tool Status
 
-A single Python 3 script `scripts/bacp-bridge` (577 lines, stdlib only) manages the file bridge at `~/.bragi/agent-control-plane/`. Nine commands implemented. Manual JSON validation. Basic audit logging.
+A single Python 3 script `scripts/bacp-bridge` (860 lines, stdlib only) manages the file bridge at `~/.bragi/agent-control-plane/`. Thirteen commands implemented. Manual JSON validation. Basic audit logging.
 
 ```
 bacp-bridge [command]
