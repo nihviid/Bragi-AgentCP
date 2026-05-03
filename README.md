@@ -85,6 +85,10 @@ Environment: `BACP_ROOT` overrides the default bridge path (`~/.bragi/agent-cont
 
 The `autocontrol` command automates the INSTRUCT step: it reads the oldest pending report, prints a manager prompt with the full report content, accepts a manager instruction from stdin, validates it, and writes it to the inbox — eliminating the first copy/paste handoff. Pass `--archive-report` to archive the source report after writing.
 
+### Using `autocontrol --watch`
+
+`--watch` runs the relay continuously: it polls `outbox/cli-to-manager/` every N seconds (default: 5), and when a report appears it prints the manager prompt and waits for your instruction. Start it with `bacp-bridge autocontrol --watch`. To adjust the poll interval, pass `--interval <seconds>`. Use `--archive-report` to clean up source reports automatically after each relay. Stop watch mode safely with Ctrl+C — it exits cleanly and logs completion. The STOP file also halts watch mode before any action, preserving the kill switch as the last line of defense.
+
 ---
 
 ## Current Limitations
