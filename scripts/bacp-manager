@@ -28,6 +28,10 @@ API_KEY = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_AP
 API_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
 API_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 
+# Detect API format: Anthropic /v1/messages or OpenAI /chat/completions
+# Default to Anthropic format. Use OpenAI if URL contains "litellm" or forced.
+USE_OPENAI_FORMAT = os.environ.get("BACP_API_FORMAT", "").lower() == "openai" or "litellm" in API_URL.lower()
+
 PROMPT = """You are the Manager AI. You control an Executor AI through a structured message bus. You are authoritative over what gets done. The Executor implements.
 
 ## MOS Rules
@@ -99,33 +103,52 @@ def find_latest_report():
 
 
 def call_llm(messages):
-    """Call the Anthropic API via the configured endpoint."""
+    """Call the LLM API via Anthropic or OpenAI-compatible format."""
     import urllib.request
     import urllib.error
 
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": API_KEY,
-        "anthropic-version": "2023-06-01",
-    }
+    if USE_OPENAI_FORMAT:
+        # OpenAI /chat/completions format (LiteLLM, OpenAI, etc.)
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {API_KEY}",
+        }
+        # Convert Anthropic messages to OpenAI format
+        oai_messages = []
+        for m in messages:
+            oai_messages.append({"role": m["role"], "content": m["content"]})
+        body = json.dumps({
+            "model": API_MODEL,
+            "max_tokens": 4096,
+            "messages": oai_messages,
+        }).encode()
+        url = f"{API_URL}/chat/completions"
+        response_key = ["choices", 0, "message", "content"]
+    else:
+        # Anthropic /v1/messages format
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": API_KEY,
+            "anthropic-version": "2023-06-01",
+        }
+        body = json.dumps({
+            "model": API_MODEL,
+            "max_tokens": 4096,
+            "messages": messages,
+        }).encode()
+        url = f"{API_URL}/v1/messages"
+        response_key = ["content", 0, "text"]
 
-    body = json.dumps({
-        "model": API_MODEL,
-        "max_tokens": 4096,
-        "messages": messages,
-    }).encode()
-
-    req = urllib.request.Request(
-        f"{API_URL}/v1/messages",
-        data=body,
-        headers=headers,
-        method="POST",
-    )
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
 
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             result = json.loads(resp.read())
-            return result["content"][0]["text"]
+            # Navigate response_key to extract text
+            val = result
+            for key in response_key:
+                val = val[key]
+            return val
     except urllib.error.HTTPError as e:
         log(f"API error {e.code}: {e.read().decode()}")
         sys.exit(1)

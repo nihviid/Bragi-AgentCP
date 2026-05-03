@@ -198,14 +198,25 @@ You are the executor in a multi-agent trio with manager and terminal panes.
 
     # --- Setup Manager Pane (left) ---
     # Lightweight manager process — no Claude Code, no project access
-    # Pass through API configuration from the user's environment
-    api_key = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY") or ""
-    api_url = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
-    api_model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+    # Read API config from ~/.zshrc so the pane gets the same env as new terminals
+    def _read_zshrc(key):
+        """Read an export line from ~/.zshrc."""
+        try:
+            with open(os.path.expanduser("~/.zshrc")) as f:
+                for line in f:
+                    if line.startswith(f"export {key}="):
+                        val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        return val
+        except Exception:
+            pass
+        return os.environ.get(key.replace("ANTHROPIC_", "ANTHROPIC_AUTH_"), "")
+
+    api_key = _read_zshrc("ANTHROPIC_API_KEY")
+    api_url = _read_zshrc("ANTHROPIC_BASE_URL")
+    api_model = _read_zshrc("ANTHROPIC_MODEL")
     manager_startup = [
         f"export BACP_ROOT={BACP_ROOT}",
         f"export ANTHROPIC_API_KEY={api_key}",
-        f"export ANTHROPIC_AUTH_TOKEN={api_key}",
         f"export ANTHROPIC_BASE_URL={api_url}",
         f"export ANTHROPIC_MODEL={api_model}",
         "echo 'Starting Manager AI (bacp-manager)...'",
