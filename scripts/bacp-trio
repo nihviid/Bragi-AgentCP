@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""BACP Trio — iTerm2 multi-agent layout for Portal development.
+
+Opens one iTerm2 window with three panes:
+  ┌──────────────────┬──────────────────────────┐
+  │  MANAGER         │  EXECUTOR                │
+  │  (message bus)   │  (project + LLM)         │
+  │                  ├──────────────────────────┤
+  │                  │  TERMINAL                │
+  │                  │  (git, npm, playwright)  │
+  └──────────────────┴──────────────────────────┘
+
+Usage:
+  bacp-trio                    # Launch Portal trio
+  bacp-trio --project appkit   # Launch AppKit trio
+  bacp-trio --project msdk     # Launch MSDK trio
+  bacp-trio --help             # Show help
+"""
+
+import os
+import sys
+import asyncio
+
+try:
+    import iterm2
+except ImportError:
+    print("Error: iterm2 Python module not installed.", file=sys.stderr)
+    print("Run: pip3 install iterm2", file=sys.stderr)
+    sys.exit(1)
+
+# Project paths
+PROJECTS = {
+    "portal": os.path.expanduser("~/Desktop/Antigravity/Bragi-portal"),
+    "appkit": os.path.expanduser("~/Desktop/Antigravity/Bragi-AppKit"),
+    "msdk": os.path.expanduser("~/Desktop/Antigravity/msdk-ios"),
+    "router": None,  # TBD
+}
+
+BACP_ROOT = os.path.expanduser("~/.bragi/agent-control-plane")
+MANAGER_ROOT = "/tmp/bacp-manager"
+
+
+async def setup_pane(session, title, cwd, startup_cmds=None):
+    """Configure a pane with title, directory, and optional startup commands."""
+    await session.async_set_name(title)
+    # Change to working directory
+    await session.async_send_text(f"cd {cwd}\n")
+    await asyncio.sleep(0.3)
+    # Send startup commands
+    if startup_cmds:
+        for cmd in startup_cmds:
+            await session.async_send_text(cmd + "\n")
+            await asyncio.sleep(0.5)
+
+
+async def main(connection):
+    app = await iterm2.async_get_app(connection)
+
+    # Determine project
+    project = "portal"
+    if "--project" in sys.argv:
+        idx = sys.argv.index("--project")
+        if idx + 1 < len(sys.argv):
+            project = sys.argv[idx + 1].lower()
+
+    if project not in PROJECTS:
+        print(f"Unknown project: {project}", file=sys.stderr)
+        print(f"Valid: {', '.join(PROJECTS.keys())}", file=sys.stderr)
+        sys.exit(1)
+
+    project_path = PROJECTS[project]
+    if project_path and not os.path.isdir(project_path):
+        print(f"Warning: Project path not found: {project_path}", file=sys.stderr)
+        print("Will still create layout, but cd may fail.", file=sys.stderr)
+
+    # Ensure manager isolation directory exists
+    os.makedirs(MANAGER_ROOT, exist_ok=True)
+
+    # Create new window
+    window = await iterm2.Window.async_create(connection)
+    await asyncio.sleep(0.5)
+
+    # Get initial session (becomes left pane = Manager)
+    manager_session = window.current_tab.current_session
+
+    # Split vertically: right pane
+    right_session = await manager_session.async_split_pane(vertical=True)
+    await asyncio.sleep(0.3)
+
+    # Split right pane horizontally: top = Executor, bottom = Terminal
+    terminal_session = await right_session.async_split_pane(vertical=False)
+    await asyncio.sleep(0.3)
+    executor_session = right_session  # top-right after split
+
+    # --- Setup Manager Pane (left) ---
+    # Isolated: no project access, message bus only
+    manager_startup = [
+        f"export BACP_ROOT={BACP_ROOT}",
+        "echo 'Manager ready — waiting for reports...'",
+        # Start autocontrol watch (will wait for reports)
+        "bacp-bridge autocontrol --watch --interval 5",
+    ]
+    await setup_pane(manager_session, "Manager", MANAGER_ROOT, manager_startup)
+
+    # --- Setup Executor Pane (top-right) ---
+    executor_startup = [
+        "echo 'Executor ready — run bacp-bridge next-instruction to read tasks'",
+    ]
+    if project_path:
+        await setup_pane(executor_session, "Executor", project_path, executor_startup)
+    else:
+        await setup_pane(executor_session, "Executor", MANAGER_ROOT,
+                        [f"echo 'Project {project} path not configured'"])
+
+    # --- Setup Terminal Pane (bottom-right) ---
+    terminal_startup = [
+        "echo 'Terminal ready — commands run here are visible to Executor'",
+    ]
+    if project_path:
+        await setup_pane(terminal_session, "Terminal", project_path, terminal_startup)
+    else:
+        await setup_pane(terminal_session, "Terminal", os.path.expanduser("~"),
+                        ["echo 'No project path set'"])
+
+    print(f"BACP Trio launched: {project}")
+    print(f"  Manager:  {MANAGER_ROOT}")
+    print(f"  Executor: {project_path or '(not set)'}")
+    print(f"  Terminal: {project_path or '(not set)'}")
+    print(f"  Bus:      {BACP_ROOT}")
+
+
+if __name__ == "__main__":
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(__doc__.strip())
+        sys.exit(0)
+
+    try:
+        iterm2.run_until_complete(main)
+    except iterm2.ConnectionError as e:
+        print(f"Error: Cannot connect to iTerm2.", file=sys.stderr)
+        print(f"Make sure iTerm2 is running and Python API is enabled:", file=sys.stderr)
+        print(f"  iTerm2 → Settings → General → Magic → Enable Python API", file=sys.stderr)
+        sys.exit(1)
