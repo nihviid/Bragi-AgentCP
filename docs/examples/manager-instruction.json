@@ -1,0 +1,14 @@
+{
+  "command": "request_status",
+  "instruction": "Return current PROJECT_STATE_SNAPSHOT including branch, last commit, working tree state, and next recommended action.",
+  "model_selection": {
+    "manager_model": "sonnet",
+    "executor_model": "sonnet",
+    "memory_action": "keep",
+    "reason": "requesting routine status update"
+  },
+  "constraints": [
+    "Do not modify any files",
+    "Return current state only"
+  ]
+}

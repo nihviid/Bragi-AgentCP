@@ -29,6 +29,26 @@ No directory navigation. No filename construction. No manual archiving.
 
 ---
 
+## The Control Loop (5 Steps)
+
+```
+INSTRUCT  echo '{"command":"...","instruction":"...","model_selection":{...}}' \
+            | ./scripts/bacp-bridge write-instruction
+
+READ      ./scripts/bacp-bridge next-instruction
+
+ACK       ./scripts/bacp-bridge ack <id>
+
+REPORT    echo '{"project":"...","task":{...},"repo":{...},"next_recommended_action":"..."}' \
+            | ./scripts/bacp-bridge write-report
+
+REVIEW    ./scripts/bacp-bridge next-report
+```
+
+That is the entire loop. Each step is one command.
+
+---
+
 ## Available Commands
 
 | Command | Purpose |
@@ -48,32 +68,6 @@ No directory navigation. No filename construction. No manual archiving.
 Flags:
 - `--json` on display commands outputs machine-parseable JSON
 - `--archive-source <id>` on write-instruction archives the source report after writing
-
----
-
-## Quick Start
-
-```bash
-# Check bridge health
-./scripts/bacp-bridge status
-
-# Display oldest pending report (copy output to ChatGPT)
-./scripts/bacp-bridge next-report
-
-# Write manager response to inbox
-echo '{"command":"continue","instruction":"...","model_selection":{...}}' | \
-  ./scripts/bacp-bridge write-instruction
-
-# Read pending manager instruction
-./scripts/bacp-bridge next-instruction
-
-# Write executor status report to outbox (after completing work)
-echo '{"project":"bacp","task":{"id":"...","description":"...","status":"complete"},"repo":{"branch":"agent/bootstrap-discovery","last_commit":"abc1234","working_tree":"clean"},"next_recommended_action":"..."}' | \
-  ./scripts/bacp-bridge write-report
-
-# Archive a consumed message (instruction or report)
-./scripts/bacp-bridge ack <message-id-or-path>
-```
 
 Environment: `BACP_ROOT` overrides the default bridge path (`~/.bragi/agent-control-plane/`).
 
