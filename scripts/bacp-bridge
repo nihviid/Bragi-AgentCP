@@ -27,7 +27,7 @@ Usage:
   echo '<json>' | bacp-bridge write-report [--ack-source <id>]
   bacp-bridge decisions [--json]
   bacp-bridge archive <path-or-id>
-  bacp-bridge archive-all <queue>
+  bacp-bridge archive-all <queue> [--older-than <seconds>]
   bacp-bridge ack <path-or-id>
   bacp-bridge stop
   bacp-bridge resume
@@ -568,7 +568,7 @@ ARCHIVE_QUEUES = {
 }
 
 
-def cmd_archive_all(queue_name):
+def cmd_archive_all(queue_name, older_than=None):
     guard_not_stopped()
 
     if queue_name not in ARCHIVE_QUEUES:
@@ -583,16 +583,39 @@ def cmd_archive_all(queue_name):
         print(f"No pending {queue_name} to archive.")
         return
 
-    print(f"About to archive all {count} pending {queue_name}:")
+    # Apply --older-than filter
+    if older_than is not None:
+        filtered = []
+        skipped = 0
+        for f in files:
+            fm = parse_filename_meta(os.path.basename(f))
+            age = _age_seconds(fm["ts"]) if fm["ts"] else -1
+            if age >= older_than:
+                filtered.append(f)
+            else:
+                skipped += 1
+        files = filtered
+        count = len(files)
+
+        if count == 0:
+            print(f"No {queue_name} older than {older_than}s to archive ({skipped} newer skipped).")
+            return
+
+        print(f"About to archive {count} {queue_name} older than {older_than}s:")
+        if skipped > 0:
+            print(f"  ({skipped} newer files skipped)")
+    else:
+        print(f"About to archive all {count} pending {queue_name}:")
+
     print(f"  Source: {queue_dir}")
-    for f in files[:5]:  # show first 5
+    for f in files[:5]:
         print(f"    {os.path.basename(f)}")
     if count > 5:
         print(f"    ... and {count - 5} more")
     print("")
 
     try:
-        response = input(f"Archive all {count} {queue_name}? [y/N]: ").strip().lower()
+        response = input(f"Archive {count} {queue_name}? [y/N]: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         print("")
         die("Cancelled.")
@@ -973,8 +996,10 @@ def main():
             cmd_archive(sys.argv[2])
         elif command == "archive-all":
             if len(sys.argv) < 3:
-                die("Usage: bacp-bridge archive-all <queue>")
-            cmd_archive_all(sys.argv[2])
+                die("Usage: bacp-bridge archive-all <queue> [--older-than <seconds>]")
+            older_than_val = consume_flag("--older-than")
+            older_than = int(older_than_val) if older_than_val is not None else None
+            cmd_archive_all(sys.argv[2], older_than=older_than)
         elif command in ("help", "--help", "-h"):
             print(__doc__.strip())
         else:
