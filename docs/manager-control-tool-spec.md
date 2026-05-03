@@ -80,17 +80,18 @@ Reports are never deleted. Archived reports remain as audit trail.
 
 | Command | Reads | Writes | Purpose |
 |---------|-------|--------|---------|
-| `status` | All queues | nothing | Show bridge health and queue counts |
-| `next-report` | outbox/ | nothing | Display oldest pending CLI report |
-| `next-instruction` | inbox/ | nothing | Display oldest pending manager instruction |
-| `write-instruction` | stdin | inbox/ | Write validated instruction from pipe |
-| `decisions` | decisions/ | nothing | Show pending/answered decisions |
+| `status [--json]` | All queues | nothing | Show bridge health and queue counts |
+| `next-report [--json]` | outbox/ | nothing | Display oldest pending CLI report |
+| `next-instruction [--json]` | inbox/ | nothing | Display oldest pending manager instruction |
+| `write-instruction [--archive-source <id>]` | stdin | inbox/ | Write validated instruction from pipe. Optionally archives source report after write. |
+| `decisions [--json]` | decisions/ | nothing | Show pending/answered decisions |
 | `archive <id>` | any queue | archive/ | Move processed message to archive |
+| `archive-all <queue>` | queue | archive/ | Bulk archive all pending messages in a queue (reports, instructions, or decisions) |
 | `ack <id>` | any queue | archive/ | Archive + acknowledge consumed message |
 | `stop` | nothing | STOP | Halt all bridge operations (confirmation) |
 | `resume` | nothing | (remove STOP) | Reactivate bridge operations (confirmation) |
 
-All commands are one line. No flags, no options, no configuration files.
+All commands are one line with optional flags. No config files needed.
 
 ---
 
@@ -203,15 +204,18 @@ All errors go to stderr. Normal output goes to stdout. Exit code 1 on failure, 0
 ### Phase 1 — Bridge Setup ✓
 - Directory structure, filename convention, documentation
 
-### Phase 2 — Bridge Helper ✓ (P0 + P1 implemented)
-- 9 CLI commands: status, next-report, next-instruction, write-instruction, decisions, archive, ack, stop, resume
+### Phase 2 — Bridge Helper ✓ (P0 + P1 + P2 implemented)
+- 10 CLI commands: status, next-report, next-instruction, write-instruction, decisions, archive, archive-all, ack, stop, resume
+- `--json` output mode for scriptable consumption
+- `--archive-source` flag for write-instruction
+- `archive-all` for bulk queue archival
 - Manual JSON validation
 - Basic error handling
 - Audit log
 
-### Phase 2.5 — Consolidation (current)
+### Phase 2.5 — Consolidation (not started)
 - Compact/remove discovery artifacts that drift from tool focus
-- Remove watcher-health spec from active scope
+- Update README for tool usage focus
 - Ensure all existing docs reference tool spec, not discovery
 
 ### Phase 3 — Automated Polling

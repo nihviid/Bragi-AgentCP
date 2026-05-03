@@ -11,17 +11,19 @@ Commands:
   write-instruction   Write manager instruction (from stdin) to inbox
   decisions           Show pending and answered decisions
   archive <id>        Move processed message to archive
+  archive-all <queue> Archive all pending messages in a queue
   ack <id>            Archive a consumed message
   stop                Activate STOP kill switch
   resume              Deactivate STOP kill switch
 
 Usage:
-  bacp-bridge status
-  bacp-bridge next-report
-  bacp-bridge next-instruction
-  echo '<json>' | bacp-bridge write-instruction
-  bacp-bridge decisions
+  bacp-bridge status [--json]
+  bacp-bridge next-report [--json]
+  bacp-bridge next-instruction [--json]
+  echo '<json>' | bacp-bridge write-instruction [--archive-source <id>]
+  bacp-bridge decisions [--json]
   bacp-bridge archive <path-or-id>
+  bacp-bridge archive-all <queue>
   bacp-bridge ack <path-or-id>
   bacp-bridge stop
   bacp-bridge resume
@@ -37,6 +39,29 @@ import glob
 import time
 import datetime
 import uuid
+
+# ── Runtime config ────────────────────────────────────────────────────────
+JSON_MODE = False  # Set by --json flag parsing in main()
+
+
+def set_json_mode():
+    """Consume --json from argv if present as the last positional arg."""
+    global JSON_MODE
+    if len(sys.argv) >= 3 and sys.argv[-1] == "--json":
+        JSON_MODE = True
+        sys.argv.pop()
+
+
+def consume_flag(name):
+    """Consume a flag + value from argv, return value or None."""
+    for i, arg in enumerate(sys.argv):
+        if arg == name and i + 1 < len(sys.argv):
+            val = sys.argv[i + 1]
+            # Remove both the flag and its value
+            del sys.argv[i : i + 2]
+            return val
+    return None
+
 
 # ── Paths ──────────────────────────────────────────────────────────────
 DEFAULT_ROOT = os.path.expanduser("~/.bragi/agent-control-plane")
@@ -231,16 +256,31 @@ def cmd_status():
     except OSError:
         pass
 
-    print(f"Bridge:                {stop_status}")
-    if stop_reason:
-        print(f"  Reason:              {stop_reason}")
-    print(f"Control root:          {ROOT}")
-    print(f"STOP:                  {'present' if is_stopped() else 'not present'}")
-    print(f"Pending instructions:  {inbox_count}  (inbox/manager-to-cli/)")
-    print(f"Pending reports:       {outbox_count}  (outbox/cli-to-manager/)")
-    print(f"Pending decisions:     {decisions_pending}  (decisions/pending/)")
-    print(f"Answered decisions:    {decisions_answered}  (decisions/answered/)")
-    print(f"Latest log:            {last_log}")
+    if JSON_MODE:
+        print(json.dumps({
+            "bridge": stop_status,
+            "reason": stop_reason,
+            "root": ROOT,
+            "stop_present": is_stopped(),
+            "queues": {
+                "inbox": inbox_count,
+                "outbox": outbox_count,
+                "decisions_pending": decisions_pending,
+                "decisions_answered": decisions_answered
+            },
+            "latest_log": last_log
+        }, indent=2))
+    else:
+        print(f"Bridge:                {stop_status}")
+        if stop_reason:
+            print(f"  Reason:              {stop_reason}")
+        print(f"Control root:          {ROOT}")
+        print(f"STOP:                  {'present' if is_stopped() else 'not present'}")
+        print(f"Pending instructions:  {inbox_count}  (inbox/manager-to-cli/)")
+        print(f"Pending reports:       {outbox_count}  (outbox/cli-to-manager/)")
+        print(f"Pending decisions:     {decisions_pending}  (decisions/pending/)")
+        print(f"Answered decisions:    {decisions_answered}  (decisions/answered/)")
+        print(f"Latest log:            {last_log}")
 
     log("status", ROOT, "ok")
 
@@ -250,7 +290,10 @@ def cmd_next_report():
 
     files = list_json_files(OUTBOX_CM)
     if not files:
-        ok("No pending reports in outbox/cli-to-manager/.")
+        if JSON_MODE:
+            print(json.dumps({"type": "report", "found": False}))
+        else:
+            ok("No pending reports in outbox/cli-to-manager/.")
         return
 
     path = files[0]
@@ -264,30 +307,39 @@ def cmd_next_report():
 
     errors = validate_report(data)
 
-    sep = "─" * 60
-    print(sep)
-    print(f"PENDING REPORT: {filename}")
-    print(f"Project: {proj} | Direction: {dtype} | Type: {mtype}")
-    print(f"Created: {ts} | Requires response: {needs_resp}")
-    if errors:
-        print(f"Warnings: {'; '.join(errors)}")
-    print(sep)
-    print("")
-    print(json.dumps(data, indent=2))
-    print("")
-    print(sep)
-    print(" COPY TO CHATGPT")
-    print("   Copy the JSON above and paste into ChatGPT.")
-    print("   After ChatGPT responds, run:")
-    print("     bacp-bridge write-instruction < <response-file>")
-    print("   Or pipe the response directly:")
-    print("     cat /tmp/chatgpt-response.json | bacp-bridge write-instruction")
-    print(sep)
+    if JSON_MODE:
+        print(json.dumps({
+            "type": "report",
+            "filename": filename,
+            "path": path,
+            "data": data,
+            "validation_warnings": errors
+        }, indent=2))
+    else:
+        sep = "─" * 60
+        print(sep)
+        print(f"PENDING REPORT: {filename}")
+        print(f"Project: {proj} | Direction: {dtype} | Type: {mtype}")
+        print(f"Created: {ts} | Requires response: {needs_resp}")
+        if errors:
+            print(f"Warnings: {'; '.join(errors)}")
+        print(sep)
+        print("")
+        print(json.dumps(data, indent=2))
+        print("")
+        print(sep)
+        print(" COPY TO CHATGPT")
+        print("   Copy the JSON above and paste into ChatGPT.")
+        print("   After ChatGPT responds, run:")
+        print("     bacp-bridge write-instruction < <response-file>")
+        print("   Or pipe the response directly:")
+        print("     cat /tmp/chatgpt-response.json | bacp-bridge write-instruction")
+        print(sep)
 
     log("next-report", path, "ok")
 
 
-def cmd_write_instruction():
+def cmd_write_instruction(archive_source=None):
     guard_not_stopped()
 
     try:
@@ -324,48 +376,48 @@ def cmd_write_instruction():
     print(f"Written: {dest}")
     log("write-instruction", dest, "ok")
 
+    # --archive-source: archive the source message after successful write
+    if archive_source:
+        old_path = _resolve_message_path(archive_source)
+        if old_path:
+            _move_to_archive(old_path)
+            print(f"Archived source: {old_path}")
+            log("write-instruction", f"source archived: {old_path}", "ok")
+        else:
+            print(f"Warning: source message '{archive_source}' not found.")
 
-def cmd_archive(target):
-    guard_not_stopped()
 
+def _resolve_message_path(target):
+    """Resolve a target string to an absolute file path.
+    Accepts a direct path or a substring to search for in message queues.
+    Returns None if not found."""
     if not target:
-        die("Specify a message path or ID to archive.")
-
-    # Resolve target to an actual file path
-    path = None
+        return None
     if os.path.isfile(target):
-        path = target
-    else:
-        # Try to find by ID substring
-        for directory in [INBOX_MC, OUTBOX_CM, DECISIONS_PENDING]:
-            for f in list_json_files(directory):
-                if target in os.path.basename(f):
-                    path = f
-                    break
-            if path:
-                break
+        return target
+    # Try to find by ID substring
+    for directory in [INBOX_MC, OUTBOX_CM, DECISIONS_PENDING]:
+        for f in list_json_files(directory):
+            if target in os.path.basename(f):
+                return f
+    return None
 
-    if not path:
-        die(f"No message found matching '{target}'")
 
+def _move_to_archive(path):
+    """Move a message file to the appropriate archive directory.
+    Handles name collisions with incrementing suffix.
+    Returns the destination path."""
     filename = os.path.basename(path)
-    # Determine archive subdirectory based on direction
-    direction = ""
     if "manager-to-cli" in path or "manager_to_cli" in path:
         archive_dir = ARCHIVE_RECV
-        direction = "received"
     elif "cli-to-human" in path or "cli_to_human" in path:
         archive_dir = ARCHIVE_SENT
-        direction = "sent"
     elif "cli-to-manager" in path or "cli_to_manager" in path:
         archive_dir = ARCHIVE_SENT
-        direction = "sent"
     elif "pending" in path:
         archive_dir = ARCHIVE_RECV
-        direction = "received"
     else:
         archive_dir = ARCHIVE_SENT
-        direction = "sent"
 
     dest = os.path.join(archive_dir, filename)
     suffix = 1
@@ -374,14 +426,76 @@ def cmd_archive(target):
         dest = os.path.join(archive_dir, f"{name}.{suffix}{ext}")
         suffix += 1
 
-    try:
-        os.rename(path, dest)
-    except OSError as e:
-        die(f"Cannot archive {path} → {dest}: {e}")
+    os.rename(path, dest)
+    return dest
 
+
+def cmd_archive(target):
+    guard_not_stopped()
+
+    if not target:
+        die("Specify a message path or ID to archive.")
+
+    path = _resolve_message_path(target)
+    if not path:
+        die(f"No message found matching '{target}'")
+
+    dest = _move_to_archive(path)
     print(f"Archived: {path}")
     print(f"    → {dest}")
     log("archive", f"{path} → {dest}", "ok")
+
+
+ARCHIVE_QUEUES = {
+    "reports": OUTBOX_CM,
+    "instructions": INBOX_MC,
+    "decisions": DECISIONS_PENDING,
+}
+
+
+def cmd_archive_all(queue_name):
+    guard_not_stopped()
+
+    if queue_name not in ARCHIVE_QUEUES:
+        valid = ", ".join(sorted(ARCHIVE_QUEUES.keys()))
+        die(f"Unknown queue '{queue_name}'. Valid queues: {valid}")
+
+    queue_dir = ARCHIVE_QUEUES[queue_name]
+    files = list_json_files(queue_dir)
+    count = len(files)
+
+    if count == 0:
+        print(f"No pending {queue_name} to archive.")
+        return
+
+    print(f"About to archive all {count} pending {queue_name}:")
+    print(f"  Source: {queue_dir}")
+    for f in files[:5]:  # show first 5
+        print(f"    {os.path.basename(f)}")
+    if count > 5:
+        print(f"    ... and {count - 5} more")
+    print("")
+
+    try:
+        response = input(f"Archive all {count} {queue_name}? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("")
+        die("Cancelled.")
+
+    if response not in ("y", "yes"):
+        print("Archive-all cancelled.")
+        return
+
+    archived = 0
+    for f in files:
+        try:
+            dest = _move_to_archive(f)
+            log("archive-all", f"{f} → {dest}", "ok")
+            archived += 1
+        except OSError as e:
+            print(f"  Error archiving {f}: {e}", file=sys.stderr)
+
+    print(f"Archived {archived} of {count} {queue_name}.")
 
 
 # ── P1 Commands ────────────────────────────────────────────────────────
@@ -391,7 +505,10 @@ def cmd_next_instruction():
 
     files = list_json_files(INBOX_MC)
     if not files:
-        ok("No pending instructions in inbox/manager-to-cli/.")
+        if JSON_MODE:
+            print(json.dumps({"type": "instruction", "found": False}))
+        else:
+            ok("No pending instructions in inbox/manager-to-cli/.")
         return
 
     path = files[0]
@@ -401,22 +518,30 @@ def cmd_next_instruction():
     proj = data.get("project", "?")
     ts = data.get("created_at", "?")
 
-    sep = "─" * 60
-    print(sep)
-    print(f"PENDING INSTRUCTION: {filename}")
-    print(f"Project: {proj} | Command: {cmd}")
-    print(f"Created: {ts}")
-    print(sep)
-    print("")
-    print(json.dumps(data, indent=2))
-    print("")
-    print(sep)
-    print(" PROCESS THIS INSTRUCTION")
-    print("   Read the instruction above and continue working.")
-    print("   After completing, run:")
-    print("     bacp-bridge ack <id>")
-    print("   Then write a status report to outbox/cli-to-manager/.")
-    print(sep)
+    if JSON_MODE:
+        print(json.dumps({
+            "type": "instruction",
+            "filename": filename,
+            "path": path,
+            "data": data
+        }, indent=2))
+    else:
+        sep = "─" * 60
+        print(sep)
+        print(f"PENDING INSTRUCTION: {filename}")
+        print(f"Project: {proj} | Command: {cmd}")
+        print(f"Created: {ts}")
+        print(sep)
+        print("")
+        print(json.dumps(data, indent=2))
+        print("")
+        print(sep)
+        print(" PROCESS THIS INSTRUCTION")
+        print("   Read the instruction above and continue working.")
+        print("   After completing, run:")
+        print("     bacp-bridge ack <id>")
+        print("   Then write a status report to outbox/cli-to-manager/.")
+        print(sep)
 
     log("next-instruction", path, "ok")
 
@@ -427,41 +552,79 @@ def cmd_decisions():
     pending_files = list_json_files(DECISIONS_PENDING)
     answered_files = list_json_files(DECISIONS_ANSWERED)
 
-    print(f"Pending decisions:  {len(pending_files)}")
-    print(f"Answered decisions: {len(answered_files)}")
-    print("")
-
-    if pending_files:
-        print("─" * 60)
-        print("PENDING DECISIONS")
-        print("─" * 60)
+    if JSON_MODE:
+        pending_list = []
         for f in pending_files:
             try:
                 data = read_json(f)
-                title = data.get("payload", {}).get("title", data.get("subject", "?"))
-                proj = data.get("project", "?")
-                fname = os.path.basename(f)
-                print(f"  • [{proj}] {title}")
-                print(f"    {fname}")
+                pending_list.append({
+                    "filename": os.path.basename(f),
+                    "path": f,
+                    "title": data.get("payload", {}).get("title", data.get("subject", "?")),
+                    "project": data.get("project", "?")
+                })
             except Exception:
-                print(f"  • {os.path.basename(f)} (unreadable)")
+                pending_list.append({
+                    "filename": os.path.basename(f),
+                    "path": f,
+                    "title": "(unreadable)"
+                })
 
-    if answered_files:
-        print("")
-        print("─" * 60)
-        print("ANSWERED DECISIONS")
-        print("─" * 60)
-        for f in reversed(answered_files[-10:]):  # show last 10
+        answered_list = []
+        for f in reversed(answered_files[-10:]):
             try:
                 data = read_json(f)
-                title = data.get("payload", {}).get("title", data.get("subject", "?"))
-                proj = data.get("project", "?")
-                fname = os.path.basename(f)
-                print(f"  • [{proj}] {title}")
-                print(f"    {fname}")
+                answered_list.append({
+                    "filename": os.path.basename(f),
+                    "path": f,
+                    "title": data.get("payload", {}).get("title", data.get("subject", "?")),
+                    "project": data.get("project", "?")
+                })
             except Exception:
                 pass
-    print("")
+
+        print(json.dumps({
+            "pending": pending_list,
+            "answered": answered_list,
+            "pending_count": len(pending_files),
+            "answered_count": len(answered_files)
+        }, indent=2))
+    else:
+        print(f"Pending decisions:  {len(pending_files)}")
+        print(f"Answered decisions: {len(answered_files)}")
+        print("")
+
+        if pending_files:
+            print("─" * 60)
+            print("PENDING DECISIONS")
+            print("─" * 60)
+            for f in pending_files:
+                try:
+                    data = read_json(f)
+                    title = data.get("payload", {}).get("title", data.get("subject", "?"))
+                    proj = data.get("project", "?")
+                    fname = os.path.basename(f)
+                    print(f"  • [{proj}] {title}")
+                    print(f"    {fname}")
+                except Exception:
+                    print(f"  • {os.path.basename(f)} (unreadable)")
+
+        if answered_files:
+            print("")
+            print("─" * 60)
+            print("ANSWERED DECISIONS")
+            print("─" * 60)
+            for f in reversed(answered_files[-10:]):
+                try:
+                    data = read_json(f)
+                    title = data.get("payload", {}).get("title", data.get("subject", "?"))
+                    proj = data.get("project", "?")
+                    fname = os.path.basename(f)
+                    print(f"  • [{proj}] {title}")
+                    print(f"    {fname}")
+                except Exception:
+                    pass
+        print("")
 
     log("decisions", ROOT, "ok")
 
@@ -541,6 +704,9 @@ def main():
     # Ensure required directories exist
     ensure_dirs()
 
+    # Parse global flags before routing
+    set_json_mode()
+
     command = sys.argv[1]
     try:
         if command == "status":
@@ -548,7 +714,8 @@ def main():
         elif command == "next-report":
             cmd_next_report()
         elif command == "write-instruction":
-            cmd_write_instruction()
+            archive_src = consume_flag("--archive-source")
+            cmd_write_instruction(archive_source=archive_src)
         elif command == "next-instruction":
             cmd_next_instruction()
         elif command == "decisions":
@@ -565,6 +732,10 @@ def main():
             if len(sys.argv) < 3:
                 die("Usage: bacp-bridge archive <message-path-or-id>")
             cmd_archive(sys.argv[2])
+        elif command == "archive-all":
+            if len(sys.argv) < 3:
+                die("Usage: bacp-bridge archive-all <queue>")
+            cmd_archive_all(sys.argv[2])
         elif command in ("help", "--help", "-h"):
             print(__doc__.strip())
         else:

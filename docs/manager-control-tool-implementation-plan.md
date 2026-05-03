@@ -20,34 +20,29 @@ No dependencies. No install step. Works on any system with Python 3.
 
 ## 2. Existing Implemented Commands
 
-| Command | Phase | Status | Lines | Notes |
-|---------|-------|--------|-------|-------|
-| `status` | P0 | Done | 30 | Reads all queue directories, prints summary + STOP state + latest log |
-| `next-report` | P0 | Done | 40 | Shows oldest outbox file with metadata, validation warnings |
-| `write-instruction` | P0 | Done | 35 | Reads stdin, validates, writes to inbox with generated filename |
-| `next-instruction` | P1 | Done | 30 | Shows oldest inbox file with metadata |
-| `decisions` | P1 | Done | 35 | Lists pending and answered decisions (last 10) |
-| `stop` | P1 | Done | 30 | Writes STOP with interactive confirmation |
-| `resume` | P1 | Done | 25 | Removes STOP with interactive confirmation |
-| `archive` | P1 | Done | 50 | Moves message to archive/sent or archive/received by origin |
-| `ack` | P1 | Done | 5 | Alias for archive with ack semantics |
+| Command | Phase | Status | Notes |
+|---------|-------|--------|-------|
+| `status` | P0 | Done | Reads all queue directories, prints summary + STOP state + latest log. Supports `--json`. |
+| `next-report` | P0 | Done | Shows oldest outbox file with metadata, validation warnings. Supports `--json`. |
+| `write-instruction` | P0 | Done | Reads stdin, validates, writes to inbox with generated filename. Supports `--archive-source <id>`. |
+| `next-instruction` | P1 | Done | Shows oldest inbox file with metadata. Supports `--json`. |
+| `decisions` | P1 | Done | Lists pending and answered decisions (last 10). Supports `--json`. |
+| `stop` | P1 | Done | Writes STOP with interactive confirmation. |
+| `resume` | P1 | Done | Removes STOP with interactive confirmation. |
+| `archive` | P1 | Done | Moves message to archive/sent or archive/received by origin. |
+| `ack` | P1 | Done | Alias for archive with ack semantics. |
+| `archive-all` | P2 | Done | Bulk archive all messages in a queue (`reports`, `instructions`, `decisions`) with y/N confirmation. |
 
-All P0 and P1 commands are fully implemented. Zero gaps.
+**10 commands implemented.** All P0, P1, and selected P2 complete.
 
 ---
 
-## 3. Missing Commands
+## 3. Remaining Quality Gaps
 
-None. All nine designed commands exist.
-
-The only remaining gaps are **quality not features**:
-
-| Gap | Priority | Description |
-|-----|----------|-------------|
-| `jsonschema` validation | Medium | Current validation is manual string checks. A proper `jsonschema` import would validate against the 4 schema files. |
-| Auto-archive on write-instruction | Low | The written instruction file stays in place. The source report it responds to is not auto-archived. Human must `ack` separately. |
-| Formatted output (`--json` flag) | Low | All output is human-readable text. No machine-parseable JSON output mode. |
-| Bulk archive | Low | No command to archive all processed messages older than N days. |
+| Gap | Priority | Status | Description |
+|-----|----------|--------|-------------|
+| `jsonschema` validation | Medium | Not started | Current validation is manual string checks. A proper `jsonschema` import would validate against the 4 schema files. |
+| Bulk archive by age | Low | Not started | No command to archive messages older than N days. Current `archive-all` archives everything. |
 
 ---
 
@@ -73,7 +68,7 @@ The loop works. The only missing piece is **automated polling** (Phase 3) and **
 
 ## 5. Exact Implementation Steps (Remaining)
 
-### Step 1 — jsonschema Validation
+### Step 1 — jsonschema Validation (not started)
 
 Add proper schema validation using Python's built-in capabilities (no external dependency):
 
@@ -85,17 +80,7 @@ Implementation:
 - `scripts/bacp-bridge`: ~30 additional lines for schema file loading and validation
 - No new files needed
 
-### Step 2 — Consolidated Output Mode
-
-Add a `--json` flag to `status`, `next-report`, `next-instruction`, `decisions`:
-
-- Output machine-parseable JSON for future tool consumption
-- Default remains human-readable (backward compatible)
-
-Implementation:
-- `scripts/bacp-bridge`: ~40 additional lines for conditional output formatting
-
-### Step 3 — README Update
+### Step 2 — README Update (not started)
 
 Replace the current README's discovery-phase focus with tool documentation:
 
@@ -107,7 +92,7 @@ Replace the current README's discovery-phase focus with tool documentation:
 Implementation:
 - `README.md`: rewrite to focus on tool usage
 
-### Step 4 — Consolidation Cleanup
+### Step 3 — Consolidation Cleanup (not started)
 
 Remove or mark discovery-phase docs that are out of scope:
 
@@ -117,6 +102,8 @@ Remove or mark discovery-phase docs that are out of scope:
 
 Implementation:
 - Approx 3-5 file edits, all in docs/
+
+### Step 4 — End-to-End Verification (not started)
 
 ### Step 5 — End-to-End Verification
 
