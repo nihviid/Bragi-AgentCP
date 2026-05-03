@@ -50,7 +50,10 @@ PROJECT_NAMES = {
 }
 
 BACP_ROOT = os.path.expanduser("~/.bragi/agent-control-plane")
-MANAGER_ROOT = "/tmp/bacp-manager"
+
+def manager_root(project):
+    """Per-project isolation directory so multiple trios don't conflict."""
+    return f"/tmp/bacp-manager-{project}"
 
 
 async def setup_pane(session, title, cwd, startup_cmds=None):
@@ -112,18 +115,20 @@ async def main(connection):
         print(f"  Layout will still open, but cd may fail.\n", file=sys.stderr)
 
     # Ensure manager isolation directory exists
-    os.makedirs(MANAGER_ROOT, exist_ok=True)
+    os.makedirs(manager_root(project), exist_ok=True)
 
     # Write isolated CLAUDE.md for Manager (restricted to bridge operations)
-    manager_claude = os.path.join(MANAGER_ROOT, "CLAUDE.md")
+    manager_claude = os.path.join(manager_root(project), "CLAUDE.md")
     with open(manager_claude, "w") as f:
-        f.write(f"""# Manager Agent — Bridge Operations Only
+        f.write(f"""# Manager Agent — {project_name}
 
-Your role is manager. You control the executor through the message bus.
+Your role is manager for {project_name}. You control the executor through the message bus.
 
 **Access:**
 - Message bus: {BACP_ROOT}
 - bacp-bridge commands only
+
+**Project:** {project_name} only — ignore reports from other projects.
 
 **You CANNOT:**
 - Read or modify project files
@@ -131,17 +136,20 @@ Your role is manager. You control the executor through the message bus.
 - Write code
 
 **Your job:**
-1. Read reports from `bacp-bridge next-report`
-2. Decompose tasks into clear instructions
-3. Write instructions via `bacp-bridge write-instruction`
-4. Verify executor reports against MOS quality gates
-5. Approve or redirect based on results
+1. Read reports for {project_name} from `bacp-bridge next-report`
+2. Verify the report's project field matches {project_name} before acting
+3. Decompose tasks into clear instructions
+4. Write instructions via `bacp-bridge write-instruction`
+5. Verify executor reports against MOS quality gates
+6. Approve or redirect based on results
 
 **Rules:**
 - One task = one objective
 - Every instruction needs: objective, scope, constraints, success criteria
 - Do not expand scope mid-task
 - Route model selection: Haiku for routing, Sonnet for execution, Opus only for architecture/risk
+
+**Running concurrently:** Other project trios may be active. Only handle {project_name} reports.
 """)
 
     # Write CLAUDE.md for Executor
@@ -191,11 +199,11 @@ You are the executor in a multi-agent trio with manager and terminal panes.
     # --- Setup Manager Pane (left) ---
     # Start Claude in isolated directory with manager CLAUDE.md
     manager_startup = [
-        "export CLAUDE_CLI_CONFIG_DIR=" + MANAGER_ROOT,
+        "export CLAUDE_CLI_CONFIG_DIR=" + manager_root(project),
         "echo 'Starting Manager AI...'",
         "claude",
     ]
-    await setup_pane(manager_session, "Manager", MANAGER_ROOT, manager_startup)
+    await setup_pane(manager_session, "Manager", manager_root(project), manager_startup)
 
     # --- Setup Executor Pane (top-right) ---
     if project_path:
@@ -205,7 +213,7 @@ You are the executor in a multi-agent trio with manager and terminal panes.
         ]
         await setup_pane(executor_session, "Executor", project_path, executor_startup)
     else:
-        await setup_pane(executor_session, "Executor", MANAGER_ROOT,
+        await setup_pane(executor_session, "Executor", manager_root(project),
                         ["echo 'No project path set'"])
 
     # --- Setup Terminal Pane (bottom-right) ---
@@ -215,7 +223,7 @@ You are the executor in a multi-agent trio with manager and terminal panes.
         await setup_pane(terminal_session, "Terminal", os.path.expanduser("~"), None)
 
     print(f"BACP Trio launched: {project}")
-    print(f"  Manager:  {MANAGER_ROOT}")
+    print(f"  Manager:  {manager_root(project)}")
     print(f"  Executor: {project_path or '(not set)'}")
     print(f"  Terminal: {project_path or '(not set)'}")
     print(f"  Bus:      {BACP_ROOT}")
