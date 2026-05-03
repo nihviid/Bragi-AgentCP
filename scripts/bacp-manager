@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""BACP Manager — lightweight AI manager process for the control loop.
+
+Runs in the Manager pane. No project filesystem access — only the bridge.
+Reads reports, calls LLM with memory context, writes instructions.
+
+Environment:
+  ANTHROPIC_API_KEY    or ANTHROPIC_AUTH_TOKEN
+  ANTHROPIC_BASE_URL   (optional, default: https://api.anthropic.com)
+  ANTHROPIC_MODEL      (optional, default: claude-sonnet-4-20250514)
+  BACP_ROOT            (optional, default: ~/.bragi/agent-control-plane)
+"""
+
+import json
+import os
+import sys
+import glob
+import datetime
+
+# ── Configuration ────────────────────────────────────────────────────
+BACP_ROOT = os.environ.get("BACP_ROOT", os.path.expanduser("~/.bragi/agent-control-plane"))
+MEMORY_DIR = os.path.join(BACP_ROOT, "memory")
+MEMORY_LOG = os.path.join(MEMORY_DIR, "manager-log.jsonl")
+OUTBOX = os.path.join(BACP_ROOT, "outbox", "cli-to-manager")
+INBOX = os.path.join(BACP_ROOT, "inbox", "manager-to-cli")
+
+API_KEY = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN") or ""
+API_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+API_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+
+PROMPT = """You are the Manager AI. You control an Executor AI through a structured message bus. You are authoritative over what gets done. The Executor implements.
+
+## MOS Rules
+
+- One task = one objective. Every instruction needs: objective, scope, constraints, success criteria.
+- The Executor owns bounded execution only. The Executor cannot expand scope, make architecture decisions, or modify files outside scope.
+- The Manager owns direction, quality, verification.
+- The Manager must verify the Executor's report before issuing the next instruction.
+- Tests/checks must pass or be explicitly justified.
+
+## Your Job
+
+Read the report below. If a previous decision exists in the memory log, consider it before deciding.
+
+Write a SINGLE JSON instruction as your response (no commentary, no markdown). The instruction must have these fields:
+- "command": one of: "continue", "redirect", "pause", "approve", "reject"
+- "instruction": clear task description with objective, scope, constraints
+- "model_selection": { "manager_model": "sonnet", "executor_model": "sonnet", "memory_action": "keep", "reason": "why this model" }
+
+## Memory
+
+Previous decisions are provided below. Use them to maintain consistency.
+"""
+
+# ── Helpers ───────────────────────────────────────────────────────────
+
+def log(msg):
+    print(f"[manager] {msg}", file=sys.stderr)
+
+
+def now_iso():
+    return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def read_memory(limit=10):
+    """Read the last N entries from the memory log."""
+    if not os.path.isfile(MEMORY_LOG):
+        return []
+    entries = []
+    with open(MEMORY_LOG) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    return entries[-limit:]
+
+
+def write_memory(entry):
+    """Append an entry to the memory log."""
+    os.makedirs(MEMORY_DIR, exist_ok=True)
+    with open(MEMORY_LOG, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def find_latest_report():
+    """Find the newest pending report in outbox/."""
+    if not os.path.isdir(OUTBOX):
+        return None
+    files = sorted(glob.glob(os.path.join(OUTBOX, "*.json")), key=os.path.getmtime)
+    if not files:
+        return None
+    path = files[0]
+    with open(path) as f:
+        data = json.load(f)
+    return {"path": path, "data": data, "filename": os.path.basename(path)}
+
+
+def call_llm(messages):
+    """Call the Anthropic API via the configured endpoint."""
+    import urllib.request
+    import urllib.error
+
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": API_KEY,
+        "anthropic-version": "2023-06-01",
+    }
+
+    body = json.dumps({
+        "model": API_MODEL,
+        "max_tokens": 4096,
+        "messages": messages,
+    }).encode()
+
+    req = urllib.request.Request(
+        f"{API_URL}/v1/messages",
+        data=body,
+        headers=headers,
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            result = json.loads(resp.read())
+            return result["content"][0]["text"]
+    except urllib.error.HTTPError as e:
+        log(f"API error {e.code}: {e.read().decode()}")
+        sys.exit(1)
+    except Exception as e:
+        log(f"API error: {e}")
+        sys.exit(1)
+
+
+def write_instruction(instruction_text, report_filename):
+    """Parse LLM response and write instruction to inbox."""
+    # Strip markdown code fences if present
+    text = instruction_text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1]
+    if text.endswith("```"):
+        text = text.rsplit("```", 1)[0]
+    text = text.strip()
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        log(f"LLM response was not valid JSON: {e}")
+        log(f"Response was: {text[:200]}...")
+        return None
+
+    # Validate required fields
+    if "command" not in data or "instruction" not in data:
+        log("LLM response missing required fields (command, instruction)")
+        return None
+
+    project = data.get("project", "unknown")
+    command = data.get("command", "instruction")
+    now = now_iso().replace(":", "").replace("-", "")
+    mid = f"{now}~{project}~manager~p{os.getpid()}"
+    filename = f"{mid}.{command}.json"
+    dest = os.path.join(INBOX, filename)
+
+    with open(dest, "w") as f:
+        json.dump(data, f, indent=2)
+
+    log(f"Instruction written: {dest}")
+    return filename
+
+
+def main():
+    log(f"Starting (model={API_MODEL}, url={API_URL})")
+
+    # Find latest report
+    report = find_latest_report()
+    if not report:
+        log("No pending reports.")
+        return
+
+    log(f"Report found: {report['filename']}")
+
+    # Read memory
+    memory = read_memory(limit=10)
+
+    # Build messages
+    messages = [{"role": "user", "content": PROMPT}]
+
+    if memory:
+        memory_text = "## Previous decisions:\n"
+        for entry in memory:
+            memory_text += f"- {entry.get('timestamp', '?')}: {entry.get('report_task', '?')} → {entry.get('command', '?')}\n"
+        messages.append({"role": "assistant", "content": "I will review the memory first."})
+        messages.append({"role": "user", "content": memory_text})
+
+    report_text = f"## Current Report\n\nFilename: {report['filename']}\n\n{json.dumps(report['data'], indent=2)}"
+    messages.append({"role": "user", "content": report_text})
+
+    # Call LLM
+    log("Calling LLM...")
+    response = call_llm(messages)
+    log(f"LLM responded ({len(response)} chars)")
+
+    # Write instruction
+    instr_filename = write_instruction(response, report["filename"])
+
+    # Write to memory
+    write_memory({
+        "timestamp": now_iso(),
+        "report_filename": report["filename"],
+        "report_task": report["data"].get("payload", {}).get("project_state", {}).get("task", {}).get("description", "unknown"),
+        "command": json.loads(response).get("command", "unknown") if instr_filename else "error",
+        "instruction_file": instr_filename or "failed",
+    })
+
+    if instr_filename:
+        log("Cycle complete.")
+    else:
+        log("Cycle failed — no instruction written.")
+
+
+if __name__ == "__main__":
+    if "--watch" in sys.argv:
+        import time as _time
+        interval = 10
+        print(f"Manager watch started (polling every {interval}s). Ctrl+C to stop.")
+        try:
+            while True:
+                main()
+                _time.sleep(interval)
+        except KeyboardInterrupt:
+            print("\nManager watch stopped.")
+    else:
+        main()

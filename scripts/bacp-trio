@@ -197,11 +197,11 @@ You are the executor in a multi-agent trio with manager and terminal panes.
     executor_session = right_session  # top-right after split
 
     # --- Setup Manager Pane (left) ---
-    # Start Claude in isolated directory with manager CLAUDE.md
+    # Lightweight manager process — no Claude Code, no project access
     manager_startup = [
-        "export CLAUDE_CLI_CONFIG_DIR=" + manager_root(project),
-        "echo 'Starting Manager AI...'",
-        "claude",
+        f"export BACP_ROOT={BACP_ROOT}",
+        "echo 'Starting Manager AI (bacp-manager)...'",
+        "bacp-manager --watch",
     ]
     await setup_pane(manager_session, "Manager", manager_root(project), manager_startup)
 
