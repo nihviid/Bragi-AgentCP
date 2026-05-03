@@ -135,16 +135,11 @@ Your role is manager for {project_name}. You control the executor through the me
 - Run terminal commands (git, npm, pytest)
 - Write code
 
-**Your job — automated loop:**
-1. Run `bacp-bridge next-report` to check for pending reports
-2. If a report exists for {project_name}, read it, decompose the task
-3. Write a clear instruction via `bacp-bridge write-instruction`
+**Protocol:**
+1. Human will ask you to check for reports. Run `bacp-bridge next-report`
+2. Read the report, decompose the task into a clear instruction
+3. Write the instruction via `bacp-bridge write-instruction`
 4. ACK the report with `bacp-bridge ack <id>`
-5. Wait for executor response, then check for new report
-6. Verify executor reports against MOS quality gates
-7. Repeat — check for new reports every time you finish
-
-Do NOT ask the human what to do. Your job is to keep the loop moving autonomously.
 
 **Rules:**
 - One task = one objective
@@ -169,12 +164,11 @@ Do NOT ask the human what to do. Your job is to keep the loop moving autonomousl
 
 You are the executor in a multi-agent trio. The manager sends instructions through the bridge.
 
-**Automated loop — do NOT wait for the human to prompt you:**
-1. Run `bacp-bridge next-instruction` to check for pending instructions
+**Protocol:**
+1. Human will ask you to check for instructions. Run `bacp-bridge next-instruction`
 2. If an instruction exists, ACK it: `bacp-bridge ack <id>`
 3. Execute the task using your tools (read/write files, run shell commands)
 4. Report back via `bacp-bridge write-report --ack-source <id>`
-5. Check for the next instruction — keep the loop moving
 
 **Boundaries:**
 - Do not expand task scope
@@ -199,35 +193,23 @@ You are the executor in a multi-agent trio. The manager sends instructions throu
     executor_session = right_session  # top-right after split
 
     # --- Setup Manager Pane (left) ---
-    # Polls outbox/ every 5s, runs Claude headlessly when reports exist
-    manager_loop = f"""while true; do
-  if ls {BACP_ROOT}/outbox/cli-to-manager/*.json 2>/dev/null; then
-    claude -p "Read the pending report from 'bacp-bridge next-report', analyze it, write an instruction with 'bacp-bridge write-instruction', ACK the report with 'bacp-bridge ack <id>', then report done. Work autonomously — do not ask the human."
-  fi
-  sleep 5
-done"""
+    # Interactive Claude Code with isolated CLAUDE.md — full tooling
     manager_startup = [
         f"export BACP_ROOT={BACP_ROOT}",
         'export PATH="$HOME/bin:$HOME/.local/bin:$PATH"',
-        "echo 'Manager: polling every 5s for reports...'",
-        manager_loop,
+        "echo 'Manager Claude ready — use bacp-bridge next-report to check for reports'",
+        "claude",
     ]
     await setup_pane(manager_session, "Manager", manager_root(project), manager_startup)
 
     # --- Setup Executor Pane (top-right) ---
-    # Polls inbox/ every 5s, runs Claude headlessly when instructions arrive
+    # Interactive Claude Code in project directory — full tooling
     if project_path:
-        executor_loop = f"""while true; do
-  if ls {BACP_ROOT}/inbox/manager-to-cli/*.json 2>/dev/null; then
-    claude -p "Read the pending instruction from 'bacp-bridge next-instruction', execute it using your tools (read/write files, run shell commands), report back with 'bacp-bridge write-report', ACK with 'bacp-bridge ack <id>'. Work autonomously — do not ask the human."
-  fi
-  sleep 5
-done"""
         executor_startup = [
             f"export BACP_ROOT={BACP_ROOT}",
             'export PATH="$HOME/bin:$HOME/.local/bin:$PATH"',
-            "echo 'Executor: polling every 5s for instructions...'",
-            executor_loop,
+            "echo 'Executor Claude ready — use bacp-bridge next-instruction to read tasks'",
+            "claude",
         ]
         await setup_pane(executor_session, "Executor", project_path, executor_startup)
     else:
