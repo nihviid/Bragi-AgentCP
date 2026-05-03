@@ -129,13 +129,96 @@ Both ChatGPT (via copy/paste in Phase 1, or a relay in later phases) and the CLI
 
 ---
 
-## 7. CLI-to-Manager Message Schema
+## 7. PROJECT_STATE_SNAPSHOT (Mandatory Every Report)
 
-Status reports from the CLI executor back to the ChatGPT manager after completing work.
+Every executor report includes a PROJECT_STATE_SNAPSHOT. This is the single source of truth the manager reads to understand everything about the current state. No separate discovery step needed — the snapshot is complete.
 
 ```json
 {
-  "id": "2026-05-03T120000-appkit-001",
+  "project": "appkit",
+  "timestamp": "2026-05-03T12:00:00Z",
+  "task": {
+    "id": "20260503T120000Z~appkit~executor~p12345~a8f3",
+    "description": "Implement device descriptor endpoint",
+    "status": "running",
+    "phase": "phase-41"
+  },
+  "repo": {
+    "branch": "feature/device-descriptor",
+    "last_commit": "a1b2c3d",
+    "working_tree": "dirty",
+    "changed_files": ["backend/routers/device_descriptor.py", "tests/test_device_descriptor.py"],
+    "diff_summary": "3 files changed, 142 insertions, 0 deletions",
+    "ahead": 2,
+    "behind": 0
+  },
+  "tests": {
+    "status": "green",
+    "summary": "142 passed, 0 failed, 0 skipped",
+    "last_run": "2026-05-03T11:30:00Z"
+  },
+  "build": {
+    "status": "green"
+  },
+  "lint": {
+    "status": "red",
+    "errors": 2,
+    "warnings": 5
+  },
+  "pr": {
+    "exists": true,
+    "number": "23",
+    "status": "draft",
+    "checks": "pending",
+    "review_status": "not_applicable"
+  },
+  "memory": {
+    "pressure": "medium",
+    "last_compaction": "2026-05-02T18:00:00Z"
+  },
+  "decisions": {
+    "pending": [],
+    "required": false
+  },
+  "risks": ["New lint errors need attention before PR is ready"],
+  "next_recommended_action": "Fix 2 lint errors uncovered in device_descriptor.py",
+  "manager_instruction_required": false
+}
+```
+
+### Snapshot Fields
+
+| Field | Purpose | Manager Reads To |
+|-------|---------|-----------------|
+| `project` | Which project | Route instruction |
+| `task.id` | Link to prior instruction | Trace verification loop |
+| `task.status` | Current execution state | Decide next command |
+| `repo.branch` | Active branch | Verify correct context |
+| `repo.working_tree` | Cleanliness | Decide commit/stash/continue |
+| `repo.diff_summary` | What changed | Quick assessment |
+| `tests.status` | Test suite health | Decide merge readiness |
+| `build.status` | Build health | Decide merge readiness |
+| `lint.status` | Code quality | Decide if cleanup needed |
+| `pr.*` | PR lifecycle | Decide review, merge, or hold |
+| `memory.pressure` | Context utilization | Decide compact/keep |
+| `decisions.pending` | Open blocks | Decide or escalate |
+| `risks` | Identified concerns | Decide mitigation |
+| `next_recommended_action` | Executor recommendation | Compare with own judgment |
+| `manager_instruction_required` | Is executor waiting | Decide immediate action |
+
+### Snapshot is the First Section of Every Executor Report
+
+The PROJECT_STATE_SNAPSHOT is the first section in the executor report. Below it, the full executor report provides detail (what was attempted, what succeeded, commands run, file changes, reasoning).
+
+---
+
+## 8. Executor Report Schema (Detailed)
+
+The full executor report. The PROJECT_STATE_SNAPSHOT (section 7) is embedded as the executive summary. The payload below provides verification-level detail.
+
+```json
+{
+  "id": "20260503T120000Z~appkit~executor~p12345~a8f3",
   "project": "appkit",
   "direction": "cli_to_manager",
   "type": "status_report",
@@ -144,30 +227,62 @@ Status reports from the CLI executor back to the ChatGPT manager after completin
   "requires_response": true,
   "created_at": "2026-05-03T12:00:00+02:00",
   "payload": {
-    "current_task": "Define ChatGPT-to-CLI bridge architecture",
+    "current_task": "Implement device descriptor endpoint",
+    "task_status": "in_progress",
     "action_taken": [
-      "Explored vault structure and message system",
-      "Reviewed existing watcher agent conventions",
-      "Drafted bridge architecture design"
+      "Created backend/routers/device_descriptor.py with 3 CRUD endpoints",
+      "Added test file tests/test_device_descriptor.py with 12 test cases",
+      "Ran full test suite: 142 passed, 0 failed",
+      "Ran lint: 2 new errors discovered in device_descriptor.py"
+    ],
+    "what_was_attempted": "Complete the device descriptor CRUD endpoint + all passing tests",
+    "what_succeeded": [
+      "All 3 CRUD endpoints implemented",
+      "12 test cases written and passing",
+      "Full test suite green (142/142)"
+    ],
+    "what_failed": [
+      "Lint: 2 errors in device_descriptor.py — unused import os, line too long (98 chars)"
     ],
     "files_created": [
-      "docs/chatgpt-cli-bridge.md"
+      "backend/routers/device_descriptor.py"
     ],
-    "files_modified": [],
+    "files_modified": [
+      "tests/test_device_descriptor.py"
+    ],
     "commands_run": [
-      "git init && git checkout -b agent/bootstrap-discovery",
-      "mkdir -p docs && mkdir -p docs/discovery",
-      "git add -A && git commit..."
+      "cat > backend/routers/device_descriptor.py",
+      "cd backend && PYTHONPATH=. ./venv/bin/pytest tests/test_device_descriptor.py -v",
+      "cd backend && PYTHONPATH=. ./venv/bin/pytest",
+      "cd frontend && npx eslint backend/routers/device_descriptor.py"
     ],
-    "git_status": "3 files staged, clean working tree",
-    "open_questions": [
-      "Should the bridge live in ~/.bragi/ or inside the BACP repo?",
-      "What is the exact polling interval for Phase 0?"
-    ],
-    "risks": [
-      "Multiple concurrent CLI sessions could write conflicting status reports"
-    ],
-    "next_recommended_action": "Write discovery plan for vault mapping",
+    "file_level_changes": "device_descriptor.py: new file with 3 endpoints (create, read, list). test_device_descriptor.py: 12 test cases covering all endpoints and 3 error paths.",
+    "git_branch": "feature/device-descriptor",
+    "git_status": "dirty",
+    "git_commits": ["a1b2c3d Add device descriptor CRUD endpoints"],
+    "uncommitted_changes": 2,
+    "test_results": {
+      "ran": true,
+      "total": 142,
+      "passed": 142,
+      "failed": 0,
+      "skipped": 0
+    },
+    "build_results": {
+      "ran": true,
+      "passed": true
+    },
+    "lint_results": {
+      "ran": true,
+      "errors": 2,
+      "warnings": 5,
+      "new_violations": 2
+    },
+    "why_next_step_recommended": "Lint errors are pre-existing style issues. Fixing them now avoids blocking PR review later. No test or functional impact.",
+    "open_questions": [],
+    "risks": ["2 new lint errors"],
+    "next_recommended_action": "Fix 2 lint errors in device_descriptor.py",
+    "recommended_model": "sonnet",
     "manager_instruction_needed": false
   }
 }
@@ -175,57 +290,84 @@ Status reports from the CLI executor back to the ChatGPT manager after completin
 
 ### Message Types (CLI → Manager)
 
-| `type` | When | `requires_response` |
-|--------|------|-------------------|
-| `status_report` | Task completed or checkpoint reached | `true` |
-| `blocked` | Cannot proceed without manager input | `true` |
-| `error` | Non-recoverable failure | `true` |
-| `information` | FYI, no action needed | `false` |
-| `decision_request` | Needs human or manager decision | `true` |
+| `type` | When | `requires_response` | Required Extra Fields |
+|--------|------|-------------------|----------------------|
+| `status_report` | Task completed or checkpoint reached | `true` | Full PROJECT_STATE_SNAPSHOT |
+| `blocked` | Cannot proceed without manager input | `true` | `blocked_reason` |
+| `error` | Non-recoverable failure | `true` | `risks` with error details |
+| `information` | FYI, no action needed | `false` | None |
+| `decision_request` | Needs human or manager decision | `true` | Decision options + recommendation |
 
 ---
 
-## 8. Manager-to-CLI Instruction Schema
+## 9. Manager Instruction Schema (Control Command)
 
-Instructions from the ChatGPT manager back to the CLI executor.
+Every manager instruction includes a command verb and a mandatory `model_selection` block. The executor never infers its model or memory behavior.
 
 ```json
 {
-  "id": "2026-05-03T120030-appkit-001-response",
-  "reply_to": "2026-05-03T120000-appkit-001",
+  "id": "20260503T120030Z~appkit~manager~p00000~b4d1",
+  "reply_to": "20260503T120000Z~appkit~executor~p12345~a8f3",
   "project": "appkit",
   "direction": "manager_to_cli",
   "type": "instruction",
+  "command": "continue",
   "from": "manager",
   "to": "executor",
   "created_at": "2026-05-03T12:00:30+02:00",
   "payload": {
     "decision": "continue",
-    "instruction": "Create docs/chatgpt-cli-bridge.md. Design only. Do not implement yet.",
+    "instruction": "Fix the 2 lint errors in device_descriptor.py, then report status.",
+    "instruction_detail": "One is an unused import, one is a line length issue. Both are in the new file only.",
+    "success_criteria": [
+      "Lint passes clean (0 errors, any warnings acceptable)",
+      "Test suite still green (142/142)"
+    ],
+    "constraints": [
+      "Do not modify any file outside backend/routers/ or tests/"
+    ],
     "model_selection": {
       "manager_model": "sonnet",
-      "executor_model": "sonnet",
+      "executor_model": "haiku",
       "memory_action": "keep",
-      "reason": "bounded documentation task"
+      "reason": "Simple lint fix — no architectural changes needed"
     },
-    "constraints": [
-      "Do not modify Router, Portal, MSDK, or AppKit",
-      "Do not implement code yet",
-      "Single design document only"
-    ],
-    "success_criteria": [
-      "Problem statement is clear",
-      "Message schemas are defined",
-      "Directory layout is specified",
-      "Phased implementation plan exists"
-    ],
-    "context_links": [
-      "bragi-vault/CLAUDE.md",
-      "bragi-vault/templates/message.md"
-    ]
+    "task_timeout_minutes": 10
   }
 }
 ```
+
+### Command Reference
+
+| Command | `type` | Effect | When Manager Sends |
+|---------|--------|--------|-------------------|
+| **continue** | `instruction` | Proceed with next task | After a status report shows completion or checkpoint |
+| **pause** | `override` | Stop immediately, keep working tree intact, wait | Unexpected state, needs human input |
+| **stop** | `override` | Abort current task, return to idle | Task is no longer relevant |
+| **redirect** | `override` | Switch to different project or task | Priority change |
+| **approve** | `decision` | Confirm proposed action may proceed | Executor requested approval |
+| **reject** | `decision` | Deny proposed action. Include reason + alternative. | Executor proposed wrong approach |
+| **request_status** | `instruction` | Produce full snapshot immediately | Before task boundary, or timeout |
+| **request_diff** | `instruction` | Produce git diff for specified files | Need to see detailed changes |
+| **request_tests** | `instruction` | Run tests (executor decides which, manager can specify paths) | Before merge, or after fix |
+| **request_pr_status** | `instruction` | Check open PRs and report | Before switching tasks |
+| **compact_memory** | `instruction` | Summarize and compress context | Before long task, or at high pressure |
+| **clear_memory** | `override` | Reset context entirely | Context saturated, or fresh perspective needed |
+| **escalate_to_human** | `instruction` | Manager cannot resolve | Business/security/access decision needed |
+
+### Model Selection Rules
+
+- **REQUIRED in every manager instruction.** No implicit defaults.
+- Executor uses the model specified. Never self-selects.
+- Opus requires manager authorization. Executor can request via `recommended_model`.
+
+### Memory Action Rules
+
+- **`keep`** — preserve full context (default for normal operation)
+- **`compact`** — summarize and discard low-value detail (before long tasks, after checkpoints)
+- **`clear`** — full context reset (fresh session, after milestone)
+
+**Auto-compaction:** If executor detects `memory.pressure = "high"` (estimated >80%), it auto-compacts and reports. Manager can override with any memory action in the next instruction.
 
 ### Message Types (Manager → CLI)
 
@@ -240,13 +382,15 @@ Instructions from the ChatGPT manager back to the CLI executor.
 
 ---
 
-## 9. Decision Request Schema
+## 10. Decision Request Schema
 
-When the CLI needs a decision from the manager or human.
+Defined in `schemas/manager-control/decision-request.schema.json`.
+
+When the CLI needs a decision from the manager or human. Decision requests go to `decisions/pending/`. When answered, the response goes to `decisions/answered/` with the manager's choice.
 
 ```json
 {
-  "id": "2026-05-03T130000-portal-002",
+  "id": "20260503T130000Z~portal~executor~p12345~c7e2",
   "project": "portal",
   "direction": "cli_to_manager",
   "type": "decision_request",
@@ -277,45 +421,44 @@ When the CLI needs a decision from the manager or human.
 }
 ```
 
-Decision requests go to `decisions/pending/`. When answered, the response goes to `decisions/answered/` with the manager's choice.
-
 ---
 
-## 10. Message Lifecycle
+## 11. Message Lifecycle (Verification Loop)
+
+The message lifecycle IS the verification loop. Every message exchange follows a complete control cycle.
 
 ```
-CREATED → PENDING → ACKNOWLEDGED → ARCHIVED
-              │                        │
-              └──→ EXPIRED             └──→ DELETED
+ISSUE → ACKNOWLEDGE → ACT → REPORT → VERIFY → DECIDE
 ```
 
+### File Lifecycle (Phase 1)
 ```
-CLI writes status report:
-  1. Write JSON to `outbox/cli-to-manager/20260503T120000Z~appkit~executor~p12345~a8f3.status.json`
-  2. File is in PENDING state
-  3. Human or relay sees the file
-  4. File content is presented to ChatGPT manager
-  5. Manager writes response to `inbox/manager-to-cli/20260503T120030Z~appkit~manager~p00000~b4d1.instruction.json`
-  6. Original status file is ACKNOWLEDGED
-  7. Both files move to archive/ (sent/ and received/)
-  8. Archive is write-only — never rewritten, only appended
+1. CLI writes executor report + PROJECT_STATE_SNAPSHOT
+   outbox/cli-to-manager/20260503T120000Z~appkit~executor~p12345~a8f3.status.json
+   → State: PENDING
 
-Manager writes instruction:
-  1. Write JSON to `inbox/manager-to-cli/20260503T120030Z~appkit~manager~p00000~b4d1.instruction.json`
-  2. CLI polls inbox, finds instruction
-  3. CLI reads instruction, begins work
-  4. CLI writes status report back (cycle continues)
-  5. Original instruction moves to archive/received/
+2. Human copies report to ChatGPT → manager reads, decides, responds
+
+3. Manager response written to:
+   inbox/manager-to-cli/20260503T120030Z~appkit~manager~p00000~b4d1.instruction.json
+   → State: PENDING
+
+4. CLI polls inbox, reads instruction
+   → Both files move to ACKNOWLEDGED
+
+5. After acknowledgment confirmed:
+   → Status report moves to archive/sent/
+   → Instruction moves to archive/received/
+   → State: ARCHIVED (write-once, never modified)
 ```
 
-### State transitions
+### State Transitions
 
-| State | Meaning | File Location |
-|-------|---------|---------------|
-| `pending` | Written but not yet read | `inbox/` or `outbox/` |
-| `acknowledged` | Counterpart has responded | Stays in place until archive |
-| `archived` | Processed, preserved for audit | `archive/sent/` or `archive/received/` |
-| `expired` | Stale, no response within TTL | `archive/` with note |
+| State | Meaning | File Location | Who Changes |
+|-------|---------|---------------|-------------|
+| `pending` | Written but not yet read | `inbox/` or `outbox/` | Writer |
+| `acknowledged` | Counterpart has read and acted | Same location | Reader |
+| `archived` | Processed, preserved for audit | `archive/sent/` or `archive/received/` | Archiver |
 
 ---
 
@@ -659,19 +802,21 @@ This is the *only* external connection from either the bridge or the CLI. The CL
 
 ### Phase 1 — Manual Structured Bridge (ACTIVE)
 
-**Status:** Directory structure created, bridge operational at filesystem level.
-**Goal:** Eliminate unstructured copy/paste. Messages are structured JSON.
+**Status:** Directory structure created, schemas defined, bridge operational at filesystem level.
+**Goal:** Eliminate unstructured copy/paste. Every message carries full control data.
 
 | Step | Status |
 |------|--------|
-| 1.1 | Create `~/.bragi/agent-control-plane/` with full directory structure |
-| 1.2 | CLI writes structured JSON status reports to `outbox/cli-to-manager/` |
-| 1.3 | Human copies JSON from file → pastes to ChatGPT |
-| 1.4 | Manager responds with structured JSON |
-| 1.5 | Human copies JSON → writes to `inbox/manager-to-cli/` |
-| 1.6 | Messages archived to `archive/` after acknowledgement |
-| 1.7 | All bridge activity logged to `logs/bridge.log` |
-| 1.8 | `STOP` file created and understood by all agents |
+| 1.1 | Create `~/.bragi/agent-control-plane/` with full directory structure | **DONE** |
+| 1.2 | Define PROJECT_STATE_SNAPSHOT schema (`schemas/manager-control/project-state.schema.json`) | **DONE** |
+| 1.3 | Define executor report schema (`schemas/manager-control/executor-report.schema.json`) | **DONE** |
+| 1.4 | Define manager instruction schema with 13 commands (`schemas/manager-control/manager-instruction.schema.json`) | **DONE** |
+| 1.5 | Define decision request schema (`schemas/manager-control/decision-request.schema.json`) | **DONE** |
+| 1.6 | CLI writes PROJECT_STATE_SNAPSHOT + full executor report to `outbox/cli-to-manager/` | **ACTIVE** |
+| 1.7 | Manager reads snapshot, issues structured instruction with model_selection | **ACTIVE** |
+| 1.8 | CLI acknowledges, acts, reports. Verification loop completes. | **ACTIVE** |
+| 1.9 | All loop iterations logged to `logs/bridge.log` | **ACTIVE** |
+| 1.10 | Kill switch understood by all agents | **DONE** |
 
 **Phase 1 is entirely human-mediated.** The CLI writes files. The human moves data between CLI and ChatGPT. This is still an improvement over unstructured copy/paste because:
 - All messages have a consistent schema

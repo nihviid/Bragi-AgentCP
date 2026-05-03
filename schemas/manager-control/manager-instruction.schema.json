@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bragi.control-plane/schemas/manager-instruction.schema.json",
+  "title": "Manager Instruction",
+  "description": "Instruction from ChatGPT manager to CLI executor. Encodes the command, the task, model selection, memory action, and constraints. Every instruction is a complete control signal — the executor needs no additional context.",
+  "type": "object",
+  "required": [
+    "id", "project", "direction", "type", "command", "from", "to",
+    "created_at", "payload"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique message identifier: TIMESTAMP~PROJECT~ROLE~PID~NONCE"
+    },
+    "reply_to": {
+      "type": "string",
+      "description": "ID of the executor report this instruction responds to, or null"
+    },
+    "project": {
+      "type": "string",
+      "enum": ["appkit", "portal", "msdk", "router", "bacp"]
+    },
+    "direction": {
+      "type": "string",
+      "const": "manager_to_cli"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["instruction", "override", "decision", "acknowledgment", "clarification", "kill"]
+    },
+    "command": {
+      "type": "string",
+      "enum": [
+        "continue", "pause", "stop", "redirect",
+        "approve", "reject",
+        "request_status", "request_diff", "request_tests", "request_pr_status",
+        "compact_memory", "clear_memory", "escalate_to_human"
+      ],
+      "description": "The control command. Determines how the executor interprets the instruction."
+    },
+    "from": {
+      "type": "string",
+      "const": "manager"
+    },
+    "to": {
+      "type": "string",
+      "enum": ["executor", "human"]
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object",
+      "required": ["instruction", "model_selection"],
+      "properties": {
+        "decision": {
+          "type": "string",
+          "enum": ["continue", "stop", "pause", "redirect", "approve", "reject", "escalate"],
+          "description": "The decision encoded by this instruction. Aligns with command."
+        },
+        "instruction": {
+          "type": "string",
+          "description": "What the executor should do. Clear, specific, actionable."
+        },
+        "instruction_detail": {
+          "type": "string",
+          "description": "Additional context, rationale, or guidance for the instruction"
+        },
+        "success_criteria": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Explicit criteria the manager will use to verify completion"
+        },
+        "constraints": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Boundaries the executor must not cross"
+        },
+        "model_selection": {
+          "type": "object",
+          "required": ["manager_model", "executor_model", "memory_action", "reason"],
+          "properties": {
+            "manager_model": {
+              "type": "string",
+              "enum": ["haiku", "sonnet", "opus"],
+              "description": "Model the manager used (or is using) for this instruction"
+            },
+            "executor_model": {
+              "type": "string",
+              "enum": ["haiku", "sonnet", "opus"],
+              "description": "Model the executor MUST use for this task"
+            },
+            "memory_action": {
+              "type": "string",
+              "enum": ["keep", "compact", "clear"],
+              "description": "What the executor should do with context memory before starting"
+            },
+            "reason": {
+              "type": "string",
+              "description": "Why this model and memory action were chosen"
+            }
+          }
+        },
+        "task_timeout_minutes": {
+          "type": "integer",
+          "description": "Maximum minutes the executor should spend before reporting status. 0 = no timeout."
+        },
+        "test_paths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Optional specific test paths to run. If absent, executor decides."
+        }
+      }
+    }
+  }
+}

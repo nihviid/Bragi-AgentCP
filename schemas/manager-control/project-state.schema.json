@@ -1,0 +1,225 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bragi.control-plane/schemas/project-state.schema.json",
+  "title": "Project State Snapshot",
+  "description": "Complete snapshot of a managed project's current state. Written by CLI executor after every task boundary. Consumed by ChatGPT manager for control decisions.",
+  "type": "object",
+  "required": [
+    "project", "timestamp", "task", "repo", "tests", "build", "lint",
+    "memory", "decisions", "risks", "next_recommended_action",
+    "manager_instruction_required"
+  ],
+  "properties": {
+    "project": {
+      "type": "string",
+      "description": "Project key: appkit, portal, msdk, router, bacp",
+      "enum": ["appkit", "portal", "msdk", "router", "bacp"]
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when this snapshot was generated"
+    },
+    "task": {
+      "type": "object",
+      "required": ["id", "description", "status"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique task identifier matching the manager instruction reply_to"
+        },
+        "description": {
+          "type": "string",
+          "description": "One-line summary of current task"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "running", "blocked", "complete", "failed", "killed"],
+          "description": "Current task execution status"
+        },
+        "phase": {
+          "type": "string",
+          "description": "Optional phase or milestone identifier"
+        },
+        "blocked_reason": {
+          "type": "string",
+          "description": "Required if status is blocked. Why the task cannot proceed."
+        }
+      }
+    },
+    "repo": {
+      "type": "object",
+      "required": ["branch", "working_tree"],
+      "properties": {
+        "branch": {
+          "type": "string",
+          "description": "Current git branch name"
+        },
+        "last_commit": {
+          "type": "string",
+          "description": "Short SHA of most recent commit"
+        },
+        "working_tree": {
+          "type": "string",
+          "enum": ["clean", "dirty"],
+          "description": "Working tree cleanliness"
+        },
+        "changed_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of changed file paths relative to repo root"
+        },
+        "diff_summary": {
+          "type": "string",
+          "description": "Short summary of what changed in the working tree"
+        },
+        "ahead": {
+          "type": "integer",
+          "description": "Commits ahead of remote"
+        },
+        "behind": {
+          "type": "integer",
+          "description": "Commits behind remote"
+        }
+      }
+    },
+    "tests": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["green", "red", "not_run"],
+          "description": "Overall test suite status"
+        },
+        "summary": {
+          "type": "string",
+          "description": "passed/failed/skipped counts as a string, e.g. '142 passed, 2 failed, 0 skipped'"
+        },
+        "last_run": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When tests were last executed"
+        },
+        "failed_tests": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of failing test names with file paths"
+        }
+      }
+    },
+    "build": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["green", "red", "not_run"],
+          "description": "Build result"
+        },
+        "output": {
+          "type": "string",
+          "description": "Relevant build output snippet if failed"
+        }
+      }
+    },
+    "lint": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["green", "red", "not_run"],
+          "description": "Lint result"
+        },
+        "errors": {
+          "type": "integer",
+          "description": "Number of lint errors"
+        },
+        "warnings": {
+          "type": "integer",
+          "description": "Number of lint warnings"
+        }
+      }
+    },
+    "pr": {
+      "type": "object",
+      "properties": {
+        "exists": {
+          "type": "boolean",
+          "description": "Whether an open PR exists for this work"
+        },
+        "number": {
+          "type": "string",
+          "description": "PR number if exists"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["draft", "open", "blocked", "ready"],
+          "description": "PR lifecycle status"
+        },
+        "checks": {
+          "type": "string",
+          "enum": ["pending", "green", "red"],
+          "description": "CI check status"
+        },
+        "review_status": {
+          "type": "string",
+          "enum": ["approved", "changes_requested", "pending", "not_applicable"],
+          "description": "Review state"
+        }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "required": ["pressure"],
+      "properties": {
+        "pressure": {
+          "type": "string",
+          "enum": ["low", "medium", "high"],
+          "description": "Estimated context memory pressure. Medium at 60%+, high at 80%+. High triggers auto-compaction."
+        },
+        "last_compaction": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When memory was last compacted or cleared"
+        }
+      }
+    },
+    "decisions": {
+      "type": "object",
+      "required": ["required"],
+      "properties": {
+        "pending": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "title": { "type": "string" },
+              "options": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "description": "List of pending decisions with options"
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Whether manager action is needed to proceed"
+        }
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Risks the executor has identified. Empty array allowed."
+    },
+    "next_recommended_action": {
+      "type": "string",
+      "description": "What the executor recommends as the next step"
+    },
+    "manager_instruction_required": {
+      "type": "boolean",
+      "description": "True if the executor is waiting on a manager instruction before proceeding"
+    }
+  }
+}

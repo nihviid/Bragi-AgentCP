@@ -1,0 +1,1012 @@
+#!/usr/bin/env python3
+"""BACP Bridge Helper — Phase 2 CLI tool for the Bragi Agent Control Plane.
+
+Reduces manual copy/paste friction by automating filesystem operations
+on the bridge directory (~/.bragi/agent-control-plane/).
+
+Commands:
+  status              Show bridge health and queue counts
+  list-instructions   List all pending manager instructions
+  list-reports        List all pending executor reports
+  next-report         Show oldest pending CLI-to-manager report
+  next-instruction    Show oldest pending manager-to-CLI instruction
+  write-instruction   Write manager instruction (from stdin) to inbox
+  write-report        Write executor status report (from stdin) to outbox
+  decisions           Show pending and answered decisions
+  archive <id>        Move processed message to archive
+  archive-all <queue> Archive all pending messages in a queue
+  ack <id>            Archive a consumed message
+  stop                Activate STOP kill switch
+  resume              Deactivate STOP kill switch
+
+Usage:
+  bacp-bridge status [--json]
+  bacp-bridge next-report [--json]
+  bacp-bridge next-instruction [--json]
+  echo '<json>' | bacp-bridge write-instruction [--archive-source <id>]
+  echo '<json>' | bacp-bridge write-report [--ack-source <id>]
+  bacp-bridge decisions [--json]
+  bacp-bridge archive <path-or-id>
+  bacp-bridge archive-all <queue> [--older-than <seconds>]
+  bacp-bridge ack <path-or-id>
+  bacp-bridge stop
+  bacp-bridge resume
+
+Environment:
+  BACP_ROOT  Override the default control-plane root path
+"""
+
+import json
+import os
+import sys
+import glob
+import time
+import datetime
+import uuid
+
+# ── Runtime config ────────────────────────────────────────────────────────
+JSON_MODE = False  # Set by --json flag parsing in main()
+
+
+def set_json_mode():
+    """Consume --json from argv if present as the last positional arg."""
+    global JSON_MODE
+    if len(sys.argv) >= 3 and sys.argv[-1] == "--json":
+        JSON_MODE = True
+        sys.argv.pop()
+
+
+def consume_flag(name):
+    """Consume a flag + value from argv, return value or None."""
+    for i, arg in enumerate(sys.argv):
+        if arg == name and i + 1 < len(sys.argv):
+            val = sys.argv[i + 1]
+            # Remove both the flag and its value
+            del sys.argv[i : i + 2]
+            return val
+    return None
+
+
+# ── Paths ──────────────────────────────────────────────────────────────
+DEFAULT_ROOT = os.path.expanduser("~/.bragi/agent-control-plane")
+ROOT = os.environ.get("BACP_ROOT", DEFAULT_ROOT)
+
+INBOX_MC = os.path.join(ROOT, "inbox", "manager-to-cli")
+OUTBOX_CM = os.path.join(ROOT, "outbox", "cli-to-manager")
+ARCHIVE_SENT = os.path.join(ROOT, "archive", "sent")
+ARCHIVE_RECV = os.path.join(ROOT, "archive", "received")
+DECISIONS_PENDING = os.path.join(ROOT, "decisions", "pending")
+DECISIONS_ANSWERED = os.path.join(ROOT, "decisions", "answered")
+LOGS = os.path.join(ROOT, "logs", "bridge.log")
+STOP = os.path.join(ROOT, "STOP")
+SCHEMAS = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "schemas", "manager-control"
+)
+
+# ── Helpers ────────────────────────────────────────────────────────────
+
+BRIDGE_LOG_ENTRIES = []  # Collect log entries, flush on exit
+
+
+def log(action, path, result):
+    """Queue a log entry to be written on successful exit."""
+    ts = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    BRIDGE_LOG_ENTRIES.append(f"{ts} {action} {path} {result}")
+
+
+def flush_log():
+    """Write queued log entries to bridge.log."""
+    if not BRIDGE_LOG_ENTRIES:
+        return
+    try:
+        with open(LOGS, "a") as f:
+            for entry in BRIDGE_LOG_ENTRIES:
+                f.write(entry + "\n")
+    except OSError as e:
+        print(f"Warning: could not write to {LOGS}: {e}", file=sys.stderr)
+
+
+def die(msg, code=1):
+    flush_log()
+    print(f"Error: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def ok(msg):
+    print(msg)
+
+
+def is_stopped():
+    return os.path.isfile(STOP)
+
+
+def guard_not_stopped():
+    if is_stopped():
+        die("Bridge is HALTED. Run 'bacp-bridge resume' or remove STOP to restore.")
+
+
+def read_file(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except FileNotFoundError:
+        die(f"File not found: {path}")
+    except OSError as e:
+        die(f"Cannot read {path}: {e}")
+
+
+def read_json(path):
+    content = read_file(path)
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as e:
+        die(f"Invalid JSON in {path}: {e}")
+
+
+def list_json_files(directory):
+    """Return sorted list of .json files in a directory (oldest first)."""
+    if not os.path.isdir(directory):
+        return []
+    files = glob.glob(os.path.join(directory, "*.json"))
+    files.sort(key=os.path.getmtime)
+    return files
+
+
+def count_files(directory):
+    return len(list_json_files(directory))
+
+
+def now_utc():
+    return datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+
+
+def make_nonce():
+    return uuid.uuid4().hex[:4]
+
+
+def make_message_id(project, role):
+    pid = os.getpid()
+    nonce = make_nonce()
+    return f"{now_utc()}~{project}~{role}~p{pid}~{nonce}"
+
+
+def parse_filename_meta(filename):
+    """Extract project, role, and timestamp from a standard bridge filename.
+    Filename format: TIMESTAMP~PROJECT~ROLE~PID~NONCE.TYPE.json
+    Returns dict with keys: ts, project, role (or None if unparsable)."""
+    base = filename.replace(".json", "")
+    parts = base.split("~")
+    meta = {"ts": None, "project": None, "role": None}
+    if len(parts) >= 1:
+        meta["ts"] = parts[0]
+    if len(parts) >= 2:
+        meta["project"] = parts[1]
+    if len(parts) >= 3:
+        meta["role"] = parts[2]
+    return meta
+
+
+def ensure_dirs():
+    for d in [INBOX_MC, OUTBOX_CM, ARCHIVE_SENT, ARCHIVE_RECV,
+              DECISIONS_PENDING, DECISIONS_ANSWERED]:
+        os.makedirs(d, exist_ok=True)
+
+
+# ── Minimal Validation ─────────────────────────────────────────────────
+
+INSTRUCTION_REQUIRED = [
+    "command", "instruction", "model_selection"
+]
+
+INSTRUCTION_MODEL_REQUIRED = [
+    "manager_model", "executor_model", "memory_action", "reason"
+]
+
+VALID_COMMANDS = {
+    "continue", "pause", "stop", "redirect", "approve", "reject",
+    "request_status", "request_diff", "request_tests", "request_pr_status",
+    "compact_memory", "clear_memory", "escalate_to_human"
+}
+
+
+def validate_instruction(data):
+    """Basic validation of a manager instruction JSON. Returns list of errors."""
+    errors = []
+    if not isinstance(data, dict):
+        errors.append("Root value must be a JSON object")
+        return errors
+
+    for field in INSTRUCTION_REQUIRED:
+        if field not in data:
+            errors.append(f"Missing required field: '{field}'")
+
+    if "command" in data and data["command"] not in VALID_COMMANDS:
+        errors.append(f"Invalid command '{data['command']}'. Valid: {', '.join(sorted(VALID_COMMANDS))}")
+
+    ms = data.get("model_selection", {})
+    if not isinstance(ms, dict):
+        errors.append("'model_selection' must be a JSON object")
+    else:
+        for field in INSTRUCTION_MODEL_REQUIRED:
+            if field not in ms:
+                errors.append(f"Missing required field: 'model_selection.{field}'")
+
+    return errors
+
+
+def validate_report(data):
+    """Basic validation of an executor report. Returns list of errors."""
+    errors = []
+    if not isinstance(data, dict):
+        errors.append("Root value must be a JSON object")
+        return errors
+    if "payload" not in data:
+        errors.append("Missing required field: 'payload'")
+    return errors
+
+
+REPORT_PAYLOAD_REQUIRED = ["project", "task", "repo", "next_recommended_action"]
+REPORT_TASK_REQUIRED = ["description", "status"]
+REPORT_REPO_REQUIRED = ["branch", "last_commit", "working_tree"]
+
+
+def validate_report_payload(data):
+    """Validate fields for write-report input. Returns list of errors."""
+    errors = []
+    if not isinstance(data, dict):
+        errors.append("Root value must be a JSON object")
+        return errors
+    for field in REPORT_PAYLOAD_REQUIRED:
+        if field not in data:
+            errors.append(f"Missing required field: '{field}'")
+    task = data.get("task", {})
+    if isinstance(task, dict):
+        for field in REPORT_TASK_REQUIRED:
+            if field not in task:
+                errors.append(f"Missing required field: 'task.{field}'")
+    else:
+        errors.append("'task' must be a JSON object")
+    repo = data.get("repo", {})
+    if isinstance(repo, dict):
+        for field in REPORT_REPO_REQUIRED:
+            if field not in repo:
+                errors.append(f"Missing required field: 'repo.{field}'")
+    else:
+        errors.append("'repo' must be a JSON object")
+    return errors
+
+
+# ── Commands ───────────────────────────────────────────────────────────
+
+def cmd_status():
+    guard_not_stopped()
+
+    stop_status = "ACTIVE"
+    stop_reason = None
+    if is_stopped():
+        stop_status = "HALTED"
+        try:
+            content = read_file(STOP)
+            stop_reason = content.strip().split("\n")[0] if content else "unknown"
+        except Exception:
+            stop_reason = "unknown"
+
+    inbox_count = count_files(INBOX_MC)
+    outbox_count = count_files(OUTBOX_CM)
+    decisions_pending = count_files(DECISIONS_PENDING)
+    decisions_answered = count_files(DECISIONS_ANSWERED)
+
+    last_log = "N/A"
+    try:
+        if os.path.isfile(LOGS):
+            with open(LOGS) as f:
+                lines = f.readlines()
+                if lines:
+                    last_log = lines[-1].strip()
+    except OSError:
+        pass
+
+    if JSON_MODE:
+        print(json.dumps({
+            "bridge": stop_status,
+            "reason": stop_reason,
+            "root": ROOT,
+            "stop_present": is_stopped(),
+            "queues": {
+                "inbox": inbox_count,
+                "outbox": outbox_count,
+                "decisions_pending": decisions_pending,
+                "decisions_answered": decisions_answered
+            },
+            "latest_log": last_log
+        }, indent=2))
+    else:
+        print(f"Bridge:                {stop_status}")
+        if stop_reason:
+            print(f"  Reason:              {stop_reason}")
+        print(f"Control root:          {ROOT}")
+        print(f"STOP:                  {'present' if is_stopped() else 'not present'}")
+        print(f"Pending instructions:  {inbox_count}  (inbox/manager-to-cli/)")
+        print(f"Pending reports:       {outbox_count}  (outbox/cli-to-manager/)")
+        print(f"Pending decisions:     {decisions_pending}  (decisions/pending/)")
+        print(f"Answered decisions:    {decisions_answered}  (decisions/answered/)")
+        print(f"Latest log:            {last_log}")
+
+    log("status", ROOT, "ok")
+
+
+def cmd_next_report():
+    guard_not_stopped()
+
+    files = list_json_files(OUTBOX_CM)
+    if not files:
+        if JSON_MODE:
+            print(json.dumps({"type": "report", "found": False}))
+        else:
+            ok("No pending reports in outbox/cli-to-manager/.")
+        return
+
+    path = files[0]
+    filename = os.path.basename(path)
+    data = read_json(path)
+    fm = parse_filename_meta(filename)
+    proj = data.get("project") or fm["project"] or "(not set)"
+    dtype = data.get("direction") or fm["role"] or "(not set)"
+    mtype = data.get("type", "?")
+    needs_resp = data.get("requires_response", "?")
+    ts = data.get("created_at") or fm["ts"] or "(not set)"
+    msg_id = data.get("id") or filename.split(".")[0] if "." in filename else filename
+
+    errors = validate_report(data)
+
+    if JSON_MODE:
+        print(json.dumps({
+            "type": "report",
+            "filename": filename,
+            "path": path,
+            "data": data,
+            "validation_warnings": errors
+        }, indent=2))
+    else:
+        sep = "─" * 60
+        print(sep)
+        print(f"PENDING REPORT: {filename}")
+        print(f"Project: {proj} | Direction: {dtype} | Type: {mtype}")
+        print(f"Created: {ts} | ID: {msg_id} | Requires response: {needs_resp}")
+        if errors:
+            print(f"Warnings: {'; '.join(errors)}")
+        print(sep)
+        print("")
+        print(json.dumps(data, indent=2))
+        print("")
+        print(sep)
+        print(" COPY TO CHATGPT")
+        print("   Copy the JSON above and paste into ChatGPT.")
+        print("   After ChatGPT responds, run:")
+        print("     bacp-bridge write-instruction < <response-file>")
+        print("   Or pipe the response directly:")
+        print("     cat /tmp/chatgpt-response.json | bacp-bridge write-instruction")
+        print(sep)
+
+    log("next-report", path, "ok")
+
+
+def cmd_write_instruction(archive_source=None):
+    guard_not_stopped()
+
+    try:
+        raw = sys.stdin.read()
+    except KeyboardInterrupt:
+        die("Interrupted.")
+
+    if not raw or not raw.strip():
+        die("No input received on stdin. Pipe a manager instruction JSON.")
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        die(f"Invalid JSON on stdin: {e}")
+
+    errors = validate_instruction(data)
+    if errors:
+        for e in errors:
+            print(f"  Validation error: {e}", file=sys.stderr)
+        die("Instruction rejected. Fix errors and try again.")
+
+    project = data.get("project", "bacp")
+    command = data.get("command", "instruction")
+    mid = make_message_id(project, "manager")
+    filename = f"{mid}.{command}.json"
+    dest = os.path.join(INBOX_MC, filename)
+
+    try:
+        with open(dest, "w") as f:
+            json.dump(data, f, indent=2)
+    except OSError as e:
+        die(f"Cannot write to {dest}: {e}")
+
+    print(f"Written: {dest}")
+    log("write-instruction", dest, "ok")
+
+    # --archive-source: archive the source message after successful write
+    if archive_source:
+        old_path = _resolve_message_path(archive_source)
+        if old_path:
+            _move_to_archive(old_path)
+            print(f"Archived source: {old_path}")
+            log("write-instruction", f"source archived: {old_path}", "ok")
+        else:
+            print(f"Warning: source message '{archive_source}' not found.")
+
+
+def cmd_write_report(ack_source=None):
+    """Write executor status report to outbox/cli-to-manager/."""
+    guard_not_stopped()
+
+    try:
+        raw = sys.stdin.read()
+    except KeyboardInterrupt:
+        die("Interrupted.")
+
+    if not raw or not raw.strip():
+        die("No input received on stdin. Pipe report JSON with project_state fields.")
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        die(f"Invalid JSON on stdin: {e}")
+
+    errors = validate_report_payload(data)
+    if errors:
+        for e in errors:
+            print(f"  Validation error: {e}", file=sys.stderr)
+        die("Report rejected. Fix errors and try again.")
+
+    project = data.get("project", "bacp")
+    mid = make_message_id(project, "executor")
+    now_iso = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    report = {
+        "id": mid,
+        "project": project,
+        "direction": "cli_to_manager",
+        "type": "status_report",
+        "created_at": now_iso,
+        "from": "executor",
+        "to": "manager",
+        "payload": {
+            "project_state": data
+        }
+    }
+
+    filename = f"{mid}.status.json"
+    dest = os.path.join(OUTBOX_CM, filename)
+
+    try:
+        with open(dest, "w") as f:
+            json.dump(report, f, indent=2)
+    except OSError as e:
+        die(f"Cannot write to {dest}: {e}")
+
+    print(f"Written: {dest}")
+    log("write-report", dest, "ok")
+
+    if ack_source:
+        old_path = _resolve_message_path(ack_source)
+        if old_path:
+            _move_to_archive(old_path)
+            print(f"Archived source: {old_path}")
+            log("write-report", f"source archived: {old_path}", "ok")
+        else:
+            print(f"Warning: source message '{ack_source}' not found.")
+
+
+def _resolve_message_path(target):
+    """Resolve a target string to an absolute file path.
+    Accepts a direct path or a substring to search for in message queues.
+    Returns None if not found."""
+    if not target:
+        return None
+    if os.path.isfile(target):
+        return target
+    # Try to find by ID substring
+    for directory in [INBOX_MC, OUTBOX_CM, DECISIONS_PENDING]:
+        for f in list_json_files(directory):
+            if target in os.path.basename(f):
+                return f
+    return None
+
+
+def _move_to_archive(path):
+    """Move a message file to the appropriate archive directory.
+    Handles name collisions with incrementing suffix.
+    Returns the destination path."""
+    filename = os.path.basename(path)
+    if "manager-to-cli" in path or "manager_to_cli" in path:
+        archive_dir = ARCHIVE_RECV
+    elif "cli-to-human" in path or "cli_to_human" in path:
+        archive_dir = ARCHIVE_SENT
+    elif "cli-to-manager" in path or "cli_to_manager" in path:
+        archive_dir = ARCHIVE_SENT
+    elif "pending" in path:
+        archive_dir = ARCHIVE_RECV
+    else:
+        archive_dir = ARCHIVE_SENT
+
+    dest = os.path.join(archive_dir, filename)
+    suffix = 1
+    while os.path.exists(dest):
+        name, ext = os.path.splitext(filename)
+        dest = os.path.join(archive_dir, f"{name}.{suffix}{ext}")
+        suffix += 1
+
+    os.rename(path, dest)
+    return dest
+
+
+def cmd_archive(target):
+    guard_not_stopped()
+
+    if not target:
+        die("Specify a message path or ID to archive.")
+
+    path = _resolve_message_path(target)
+    if not path:
+        die(f"No message found matching '{target}'")
+
+    dest = _move_to_archive(path)
+    print(f"Archived: {path}")
+    print(f"    → {dest}")
+    log("archive", f"{path} → {dest}", "ok")
+
+
+ARCHIVE_QUEUES = {
+    "reports": OUTBOX_CM,
+    "instructions": INBOX_MC,
+    "decisions": DECISIONS_PENDING,
+}
+
+
+def cmd_archive_all(queue_name, older_than=None):
+    guard_not_stopped()
+
+    if queue_name not in ARCHIVE_QUEUES:
+        valid = ", ".join(sorted(ARCHIVE_QUEUES.keys()))
+        die(f"Unknown queue '{queue_name}'. Valid queues: {valid}")
+
+    queue_dir = ARCHIVE_QUEUES[queue_name]
+    files = list_json_files(queue_dir)
+    count = len(files)
+
+    if count == 0:
+        print(f"No pending {queue_name} to archive.")
+        return
+
+    # Apply --older-than filter
+    if older_than is not None:
+        filtered = []
+        skipped = 0
+        for f in files:
+            fm = parse_filename_meta(os.path.basename(f))
+            age = _age_seconds(fm["ts"]) if fm["ts"] else -1
+            if age >= older_than:
+                filtered.append(f)
+            else:
+                skipped += 1
+        files = filtered
+        count = len(files)
+
+        if count == 0:
+            print(f"No {queue_name} older than {older_than}s to archive ({skipped} newer skipped).")
+            return
+
+        print(f"About to archive {count} {queue_name} older than {older_than}s:")
+        if skipped > 0:
+            print(f"  ({skipped} newer files skipped)")
+    else:
+        print(f"About to archive all {count} pending {queue_name}:")
+
+    print(f"  Source: {queue_dir}")
+    for f in files[:5]:
+        print(f"    {os.path.basename(f)}")
+    if count > 5:
+        print(f"    ... and {count - 5} more")
+    print("")
+
+    try:
+        response = input(f"Archive {count} {queue_name}? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("")
+        die("Cancelled.")
+
+    if response not in ("y", "yes"):
+        print("Archive-all cancelled.")
+        return
+
+    archived = 0
+    for f in files:
+        try:
+            dest = _move_to_archive(f)
+            log("archive-all", f"{f} → {dest}", "ok")
+            archived += 1
+        except OSError as e:
+            print(f"  Error archiving {f}: {e}", file=sys.stderr)
+
+    print(f"Archived {archived} of {count} {queue_name}.")
+
+
+def _format_age(ts_str):
+    """Return human-readable age string from a UTC timestamp string.
+    Accepts formats: YYYYMMDDTHHMMSSZ or YYYY-MM-DDTHH:MM:SSZ.
+    Returns e.g. '2m', '1h', '3d' or '?' on parse failure."""
+    if not ts_str:
+        return "?"
+    try:
+        cleaned = ts_str.replace("-", "").replace(":", "").replace("Z", "")
+        parsed = datetime.datetime.strptime(cleaned[:15], "%Y%m%dT%H%M%S")
+        delta = datetime.datetime.utcnow() - parsed
+        seconds = int(delta.total_seconds())
+        if seconds < 0:
+            return "0s"
+        if seconds < 60:
+            return f"{seconds}s"
+        if seconds < 3600:
+            return f"{seconds // 60}m"
+        if seconds < 86400:
+            return f"{seconds // 3600}h"
+        return f"{seconds // 86400}d"
+    except (ValueError, IndexError):
+        return "?"
+
+
+def _list_queue_items(queue_dir):
+    """Return a list of metadata dicts for all .json files in a queue directory."""
+    items = []
+    for f in list_json_files(queue_dir):
+        filename = os.path.basename(f)
+        try:
+            data = read_json(f)
+        except Exception:
+            data = {}
+        fm = parse_filename_meta(filename)
+        items.append({
+            "filename": filename,
+            "path": f,
+            "data": data,
+            "meta": fm
+        })
+    return items
+
+
+def _display_list(items, queue_name, item_type):
+    """Display a list of queue items (human or JSON mode)."""
+    if JSON_MODE:
+        out_items = []
+        for item in items:
+            d = item["data"]
+            fm = item["meta"]
+            ts = d.get("created_at") or fm["ts"] or ""
+            out_items.append({
+                "filename": item["filename"],
+                "path": item["path"],
+                "id": d.get("id") or item["filename"].split(".")[0],
+                "project": d.get("project") or fm["project"] or "",
+                "created_at": ts,
+                "age_seconds": _age_seconds(ts),
+                "type": item_type,
+                "command": d.get("command") if item_type == "instruction" else None,
+                "task_description": d.get("payload", {}).get("project_state", {}).get("task", {}).get("description") if item_type == "report" else None,
+            })
+        print(json.dumps({"count": len(items), "queue": queue_name, "items": out_items}, indent=2))
+    else:
+        if not items:
+            print(f"No pending {queue_name}.")
+            return
+        print(f"Pending {queue_name}: {len(items)}")
+        print("")
+        for i, item in enumerate(items):
+            d = item["data"]
+            fm = item["meta"]
+            ts = d.get("created_at") or fm["ts"] or "?"
+            proj = d.get("project") or fm["project"] or "(?)"
+            age = _format_age(ts)
+            msg_id = d.get("id") or item["filename"].split(".")[0]
+            print(f"  [{i}] {item['filename']}")
+            print(f"       Project: {proj} | Age: {age}")
+            if item_type == "instruction":
+                cmd = d.get("command", "?")
+                print(f"       Command: {cmd}")
+            elif item_type == "report":
+                task_desc = d.get("payload", {}).get("project_state", {}).get("task", {}).get("description", "")
+                if task_desc:
+                    print(f"       Task: {task_desc}")
+            print(f"       ID: {msg_id}")
+            print("")
+
+
+def _age_seconds(ts_str):
+    """Return age in seconds from a UTC timestamp string, or -1 on failure."""
+    if not ts_str:
+        return -1
+    try:
+        cleaned = ts_str.replace("-", "").replace(":", "").replace("Z", "")
+        parsed = datetime.datetime.strptime(cleaned[:15], "%Y%m%dT%H%M%S")
+        return int((datetime.datetime.utcnow() - parsed).total_seconds())
+    except (ValueError, IndexError):
+        return -1
+
+
+def cmd_list_instructions():
+    guard_not_stopped()
+    items = _list_queue_items(INBOX_MC)
+    _display_list(items, "instructions", "instruction")
+    log("list-instructions", INBOX_MC, f"{len(items)} items")
+
+
+def cmd_list_reports():
+    guard_not_stopped()
+    items = _list_queue_items(OUTBOX_CM)
+    _display_list(items, "reports", "report")
+    log("list-reports", OUTBOX_CM, f"{len(items)} items")
+
+
+# ── P1 Commands ────────────────────────────────────────────────────────
+
+def cmd_next_instruction():
+    guard_not_stopped()
+
+    files = list_json_files(INBOX_MC)
+    if not files:
+        if JSON_MODE:
+            print(json.dumps({"type": "instruction", "found": False}))
+        else:
+            ok("No pending instructions in inbox/manager-to-cli/.")
+        return
+
+    path = files[0]
+    filename = os.path.basename(path)
+    data = read_json(path)
+    fm = parse_filename_meta(filename)
+    cmd = data.get("command", data.get("type", "?"))
+    proj = data.get("project") or fm["project"] or "(not set)"
+    ts = data.get("created_at") or fm["ts"] or "(not set)"
+    msg_id = data.get("id") or filename.split(".")[0] if "." in filename else filename
+
+    if JSON_MODE:
+        print(json.dumps({
+            "type": "instruction",
+            "filename": filename,
+            "path": path,
+            "data": data
+        }, indent=2))
+    else:
+        sep = "─" * 60
+        print(sep)
+        print(f"PENDING INSTRUCTION: {filename}")
+        print(f"Project: {proj} | Command: {cmd}")
+        print(f"Created: {ts} | ID: {msg_id}")
+        print(sep)
+        print("")
+        print(json.dumps(data, indent=2))
+        print("")
+        print(sep)
+        print(" PROCESS THIS INSTRUCTION")
+        print("   Read the instruction above and continue working.")
+        print("   After completing, run:")
+        print("     bacp-bridge ack <id>")
+        print("   Then write a status report to outbox/cli-to-manager/.")
+        print(sep)
+
+    log("next-instruction", path, "ok")
+
+
+def cmd_decisions():
+    guard_not_stopped()
+
+    pending_files = list_json_files(DECISIONS_PENDING)
+    answered_files = list_json_files(DECISIONS_ANSWERED)
+
+    if JSON_MODE:
+        pending_list = []
+        for f in pending_files:
+            try:
+                data = read_json(f)
+                pending_list.append({
+                    "filename": os.path.basename(f),
+                    "path": f,
+                    "title": data.get("payload", {}).get("title", data.get("subject", "?")),
+                    "project": data.get("project", "?")
+                })
+            except Exception:
+                pending_list.append({
+                    "filename": os.path.basename(f),
+                    "path": f,
+                    "title": "(unreadable)"
+                })
+
+        answered_list = []
+        for f in reversed(answered_files[-10:]):
+            try:
+                data = read_json(f)
+                answered_list.append({
+                    "filename": os.path.basename(f),
+                    "path": f,
+                    "title": data.get("payload", {}).get("title", data.get("subject", "?")),
+                    "project": data.get("project", "?")
+                })
+            except Exception:
+                pass
+
+        print(json.dumps({
+            "pending": pending_list,
+            "answered": answered_list,
+            "pending_count": len(pending_files),
+            "answered_count": len(answered_files)
+        }, indent=2))
+    else:
+        print(f"Pending decisions:  {len(pending_files)}")
+        print(f"Answered decisions: {len(answered_files)}")
+        print("")
+
+        if pending_files:
+            print("─" * 60)
+            print("PENDING DECISIONS")
+            print("─" * 60)
+            for f in pending_files:
+                try:
+                    data = read_json(f)
+                    title = data.get("payload", {}).get("title", data.get("subject", "?"))
+                    proj = data.get("project", "?")
+                    fname = os.path.basename(f)
+                    print(f"  • [{proj}] {title}")
+                    print(f"    {fname}")
+                except Exception:
+                    print(f"  • {os.path.basename(f)} (unreadable)")
+
+        if answered_files:
+            print("")
+            print("─" * 60)
+            print("ANSWERED DECISIONS")
+            print("─" * 60)
+            for f in reversed(answered_files[-10:]):
+                try:
+                    data = read_json(f)
+                    title = data.get("payload", {}).get("title", data.get("subject", "?"))
+                    proj = data.get("project", "?")
+                    fname = os.path.basename(f)
+                    print(f"  • [{proj}] {title}")
+                    print(f"    {fname}")
+                except Exception:
+                    pass
+        print("")
+
+    log("decisions", ROOT, "ok")
+
+
+def cmd_stop():
+    if is_stopped():
+        ok(f"Bridge is already HALTED. {STOP} exists.")
+        return
+
+    print("⚠  WARNING: This will halt ALL bridge operations.", file=sys.stderr)
+    print(f"  STOP will be written to: {STOP}", file=sys.stderr)
+    print(file=sys.stderr)
+
+    try:
+        response = input("Are you sure? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("")
+        die("Cancelled.")
+
+    if response not in ("y", "yes"):
+        ok("Stop cancelled.")
+        return
+
+    content = (
+        f"Bridge halted by human at {datetime.datetime.utcnow().isoformat()}Z\n"
+        f"Reason: invoked via bacp-bridge stop\n"
+        f"To resume: run 'bacp-bridge resume' or delete this file.\n"
+    )
+    try:
+        with open(STOP, "w") as f:
+            f.write(content)
+    except OSError as e:
+        die(f"Cannot write STOP: {e}")
+
+    print("✓ Bridge is now HALTED.")
+    log("stop", STOP, "ok")
+
+
+def cmd_resume():
+    if not is_stopped():
+        ok("Bridge is already ACTIVE. No STOP file present.")
+        return
+
+    print("⚠  This will reactivate bridge operations.", file=sys.stderr)
+    try:
+        response = input("Resume bridge operations? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("")
+        die("Cancelled.")
+
+    if response not in ("y", "yes"):
+        ok("Resume cancelled.")
+        return
+
+    try:
+        os.remove(STOP)
+    except OSError as e:
+        die(f"Cannot remove STOP: {e}")
+
+    print("✓ Bridge is now ACTIVE.")
+    log("resume", STOP, "ok")
+
+
+def cmd_ack(target):
+    """Archive a consumed message (acknowledgement). Same as archive but with ack semantics."""
+    cmd_archive(target)
+    log("ack", target, "ok")
+
+
+# ── Main ───────────────────────────────────────────────────────────────
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__.strip())
+        sys.exit(0)
+
+    # Ensure required directories exist
+    ensure_dirs()
+
+    # Parse global flags before routing
+    set_json_mode()
+
+    command = sys.argv[1]
+    try:
+        if command == "status":
+            cmd_status()
+        elif command == "next-report":
+            cmd_next_report()
+        elif command == "list-instructions":
+            cmd_list_instructions()
+        elif command == "list-reports":
+            cmd_list_reports()
+        elif command == "write-instruction":
+            archive_src = consume_flag("--archive-source")
+            cmd_write_instruction(archive_source=archive_src)
+        elif command == "write-report":
+            ack_src = consume_flag("--ack-source")
+            cmd_write_report(ack_source=ack_src)
+        elif command == "next-instruction":
+            cmd_next_instruction()
+        elif command == "decisions":
+            cmd_decisions()
+        elif command == "stop":
+            cmd_stop()
+        elif command == "resume":
+            cmd_resume()
+        elif command == "ack":
+            if len(sys.argv) < 3:
+                die("Usage: bacp-bridge ack <message-path-or-id>")
+            cmd_ack(sys.argv[2])
+        elif command == "archive":
+            if len(sys.argv) < 3:
+                die("Usage: bacp-bridge archive <message-path-or-id>")
+            cmd_archive(sys.argv[2])
+        elif command == "archive-all":
+            if len(sys.argv) < 3:
+                die("Usage: bacp-bridge archive-all <queue> [--older-than <seconds>]")
+            older_than_val = consume_flag("--older-than")
+            older_than = int(older_than_val) if older_than_val is not None else None
+            cmd_archive_all(sys.argv[2], older_than=older_than)
+        elif command in ("help", "--help", "-h"):
+            print(__doc__.strip())
+        else:
+            die(f"Unknown command: {command}. See bacp-bridge help.")
+    finally:
+        flush_log()
+
+
+if __name__ == "__main__":
+    main()

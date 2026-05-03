@@ -1,0 +1,14 @@
+{
+  "project": "bacp",
+  "task": {
+    "id": "example-task-001",
+    "description": "Example task demonstrating the report format",
+    "status": "complete"
+  },
+  "repo": {
+    "branch": "agent/bootstrap-discovery",
+    "last_commit": "abc1234",
+    "working_tree": "clean"
+  },
+  "next_recommended_action": "Awaiting next manager instruction"
+}

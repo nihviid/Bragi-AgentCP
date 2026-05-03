@@ -101,11 +101,74 @@ This convention guarantees uniqueness even with concurrent sessions on the same 
 | `to` | Yes |
 | `created_at` | Yes (ISO 8601 with timezone) |
 | `payload.current_task` | Yes |
+| `payload.task_status` | Yes |
 | `payload.action_taken` | Yes (empty array is valid) |
+| `payload.what_was_attempted` | Yes |
+| `payload.what_succeeded` | Yes (empty array is valid) |
+| `payload.what_failed` | Yes (empty array is valid) |
 | `payload.commands_run` | Yes (empty array is valid) |
+| `payload.file_level_changes` | Yes |
+| `payload.git_branch` | Yes |
 | `payload.git_status` | Yes |
+| `payload.why_next_step_recommended` | Yes |
+| `payload.open_questions` | Yes (empty array is valid) |
+| `payload.risks` | Yes (empty array is valid) |
 | `payload.next_recommended_action` | Yes |
 | `payload.manager_instruction_needed` | Yes (boolean) |
+
+### PROJECT_STATE_SNAPSHOT (Mandatory)
+
+Every CLI status report MUST begin with a PROJECT_STATE_SNAPSHOT. This is the single source of truth the manager reads to understand everything about the current state. It precedes the detailed report.
+
+**Snapshot fields (all required):**
+- `project` — Which project (appkit, portal, msdk, router, bacp)
+- `timestamp` — ISO 8601 generation time
+- `task` — id, description, status (pending/running/blocked/complete), optional phase
+- `repo` — branch, last_commit, working_tree (clean/dirty), changed_files[], diff_summary
+- `tests` — status (green/red/not_run), summary, last_run
+- `build` — status (green/red/not_run)
+- `lint` — status (green/red/not_run), errors count, warnings count
+- `pr` — exists, number, status (draft/open/blocked/ready), checks (pending/green/red)
+- `memory` — pressure (low/medium/high), last_compaction
+- `decisions` — pending[], required (bool)
+- `risks` — string array
+- `next_recommended_action` — string
+- `manager_instruction_required` — boolean
+
+**Schema file:** `schemas/manager-control/project-state.schema.json`
+
+The snapshot is the executive summary. The full report below it provides verification-level detail: exact commands run, file-level changes, test output, reasoning.
+
+**Appendix: Valid snapshot example**
+
+```json
+{
+  "project": "bacp",
+  "timestamp": "2026-05-03T12:00:00Z",
+  "task": {
+    "id": "20260503T120000Z~bacp~discovery~p12345~a8f3",
+    "description": "Design manager-control-first architecture",
+    "status": "complete",
+    "phase": "bootstrap"
+  },
+  "repo": {
+    "branch": "agent/bootstrap-discovery",
+    "last_commit": "c1681c8",
+    "working_tree": "clean",
+    "changed_files": ["docs/manager-control-loop.md"],
+    "diff_summary": "1 file changed, 862 insertions"
+  },
+  "tests": { "status": "not_run" },
+  "build": { "status": "not_run" },
+  "lint": { "status": "not_run" },
+  "pr": { "exists": false },
+  "memory": { "pressure": "low" },
+  "decisions": { "pending": [], "required": false },
+  "risks": [],
+  "next_recommended_action": "Align bridge schemas with manager-control-loop",
+  "manager_instruction_required": false
+}
+```
 
 ---
 
@@ -295,7 +358,19 @@ TIMESTAMP | DIRECTION | STAGE | MESSAGE_ID | TYPE | STATUS
 
 ---
 
-## 9. Known Limitations
+## 9. Control Loop Design Decisions
+
+These decisions resolve open questions from the manager-control-loop design. They are now committed and should not be reopened without explicit manager override.
+
+| Decision | Rule | Rationale |
+|----------|------|-----------|
+| **Memory compaction** | AUTO at >80% pressure. Manager can override with any `memory_action`. | Prevents context saturation without manager intervention. Manager always retains authority. |
+| **Test selection** | CLI decides which tests to run by default. Manager can override with `test_paths` in instruction. | CLI has local context. Manager may need specific verification. |
+| **Model selection** | REQUIRED in every manager instruction. No implicit defaults. | Every task must be intentionally routed. Prevents Haiku from writing code or Opus from routing. |
+| **PR creation** | CLI MAY create DRAFT PRs autonomously. Manager approval REQUIRED to mark ready or merge. | Draft PRs are workspace. Merging is a decision. Balances flow with control. |
+| **Pause behavior** | DO NOT stash. Leave working tree intact. Manager decides follow-up. | Stashing hides state. Manager needs to see exactly what was in progress to decide. |
+
+---
 
 | Limitation | Impact | Planned Resolution |
 |-----------|--------|-------------------|
