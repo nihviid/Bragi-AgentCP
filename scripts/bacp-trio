@@ -135,21 +135,22 @@ Your role is manager for {project_name}. You control the executor through the me
 - Run terminal commands (git, npm, pytest)
 - Write code
 
-**Your job:**
-1. Read reports for {project_name} from `bacp-bridge next-report`
-2. Verify the report's project field matches {project_name} before acting
-3. Decompose tasks into clear instructions
-4. Write instructions via `bacp-bridge write-instruction`
-5. Verify executor reports against MOS quality gates
-6. Approve or redirect based on results
+**Your job — automated loop:**
+1. Run `bacp-bridge next-report` to check for pending reports
+2. If a report exists for {project_name}, read it, decompose the task
+3. Write a clear instruction via `bacp-bridge write-instruction`
+4. ACK the report with `bacp-bridge ack <id>`
+5. Wait for executor response, then check for new report
+6. Verify executor reports against MOS quality gates
+7. Repeat — check for new reports every time you finish
+
+Do NOT ask the human what to do. Your job is to keep the loop moving autonomously.
 
 **Rules:**
 - One task = one objective
 - Every instruction needs: objective, scope, constraints, success criteria
 - Do not expand scope mid-task
 - Route model selection: Haiku for routing, Sonnet for execution, Opus only for architecture/risk
-
-**Running concurrently:** Other project trios may be active. Only handle {project_name} reports.
 """)
 
     # Write CLAUDE.md for Executor
@@ -166,18 +167,19 @@ Your role is manager for {project_name}. You control the executor through the me
                 f.write(f"""
 # Trio Execution Notes
 
-You are the executor in a multi-agent trio with manager and terminal panes.
+You are the executor in a multi-agent trio. The manager sends instructions through the bridge.
 
-**Protocol:**
-- Read instructions from: `bacp-bridge next-instruction`
-- ACK after reading: `bacp-bridge ack <id>`
-- Run terminal commands in the Terminal pane (bottom-right)
-- Report back via: `bacp-bridge write-report --ack-source <id>`
+**Automated loop — do NOT wait for the human to prompt you:**
+1. Run `bacp-bridge next-instruction` to check for pending instructions
+2. If an instruction exists, ACK it: `bacp-bridge ack <id>`
+3. Execute the task using your tools (read/write files, run shell commands)
+4. Report back via `bacp-bridge write-report --ack-source <id>`
+5. Check for the next instruction — keep the loop moving
 
 **Boundaries:**
 - Do not expand task scope
 - Do not make architecture decisions without manager approval
-- Surface blockers immediately in reports
+- Surface blockers in reports instantly
 """)
 
     # Create new window
@@ -197,43 +199,21 @@ You are the executor in a multi-agent trio with manager and terminal panes.
     executor_session = right_session  # top-right after split
 
     # --- Setup Manager Pane (left) ---
-    # Lightweight manager process — no Claude Code, no project access
-    # Read API config from ~/.zshrc so the pane gets the same env as new terminals
-    def _read_zshrc(key):
-        """Read an export line from ~/.zshrc."""
-        try:
-            with open(os.path.expanduser("~/.zshrc")) as f:
-                for line in f:
-                    if line.startswith(f"export {key}="):
-                        val = line.split("=", 1)[1].strip().strip('"').strip("'")
-                        return val
-        except Exception:
-            pass
-        return os.environ.get(key.replace("ANTHROPIC_", "ANTHROPIC_AUTH_"), "")
-
-    api_key = _read_zshrc("ANTHROPIC_API_KEY")
-    api_url = _read_zshrc("ANTHROPIC_BASE_URL")
-    api_model = _read_zshrc("ANTHROPIC_MODEL")
+    # Claude Code with isolated CLAUDE.md — reads reports, writes instructions
     manager_startup = [
         f"export BACP_ROOT={BACP_ROOT}",
-        f"export ANTHROPIC_API_KEY={api_key}",
-        f"export ANTHROPIC_BASE_URL={api_url}",
-        f"export ANTHROPIC_MODEL={api_model}",
-        "echo 'Starting Manager AI (bacp-manager)...'",
-        "bacp-manager --watch",
+        "echo 'Starting Manager Claude...'",
+        "claude",
     ]
     await setup_pane(manager_session, "Manager", manager_root(project), manager_startup)
 
     # --- Setup Executor Pane (top-right) ---
-    # Automated executor — no Claude Code, calls LLM directly, runs commands
+    # Claude Code in project directory — reads instructions, writes code, runs commands
     if project_path:
         executor_startup = [
             f"export BACP_ROOT={BACP_ROOT}",
-            f"export ANTHROPIC_API_KEY={api_key}",
-            f"export ANTHROPIC_BASE_URL={api_url}",
-            f"export ANTHROPIC_MODEL={api_model}",
-            "echo 'Starting Executor AI (bacp-executor)...'",
-            "bacp-executor --watch",
+            "echo 'Starting Executor Claude...'",
+            "claude",
         ]
         await setup_pane(executor_session, "Executor", project_path, executor_startup)
     else:
