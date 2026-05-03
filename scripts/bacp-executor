@@ -1,0 +1,338 @@
+#!/usr/bin/env python3
+"""BACP Executor — automated agent that reads instructions, runs commands, reports results.
+
+Runs in the Executor pane. Polls inbox/, calls LLM, executes commands via subprocess,
+writes structured reports to outbox/. No manual attention required.
+
+Environment:
+  ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN
+  ANTHROPIC_BASE_URL   (optional)
+  ANTHROPIC_MODEL      (optional)
+  BACP_ROOT            (optional)
+"""
+
+import json
+import os
+import sys
+import glob
+import datetime
+import subprocess
+
+# ── Configuration ────────────────────────────────────────────────────
+BACP_ROOT = os.environ.get("BACP_ROOT", os.path.expanduser("~/.bragi/agent-control-plane"))
+INBOX = os.path.join(BACP_ROOT, "inbox", "manager-to-cli")
+OUTBOX = os.path.join(BACP_ROOT, "outbox", "cli-to-manager")
+
+API_KEY = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY") or ""
+API_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+API_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+USE_OPENAI_FORMAT = "litellm" in API_URL.lower()
+
+# ── Helpers ───────────────────────────────────────────────────────────
+
+def log(msg):
+    print(f"[executor] {msg}", file=sys.stderr)
+
+
+def now_iso():
+    return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def now_ts():
+    return datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+
+
+def list_json_files(directory):
+    if not os.path.isdir(directory):
+        return []
+    files = sorted(glob.glob(os.path.join(directory, "*.json")), key=os.path.getmtime)
+    return files
+
+
+def read_json(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+def call_llm(messages):
+    """Call the LLM API."""
+    import urllib.request
+    import urllib.error
+
+    if USE_OPENAI_FORMAT:
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {API_KEY}",
+        }
+        oai_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+        body = json.dumps({"model": API_MODEL, "max_tokens": 8192, "messages": oai_messages}).encode()
+        url = f"{API_URL}/chat/completions"
+        keys = ["choices", 0, "message", "content"]
+    else:
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": API_KEY,
+            "anthropic-version": "2023-06-01",
+        }
+        body = json.dumps({"model": API_MODEL, "max_tokens": 8192, "messages": messages}).encode()
+        url = f"{API_URL}/v1/messages"
+        keys = ["content", 0, "text"]
+
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            result = json.loads(resp.read())
+            val = result
+            for k in keys:
+                val = val[k]
+            return val
+    except urllib.error.HTTPError as e:
+        log(f"API error {e.code}: {e.read().decode()[:200]}")
+        return None
+
+
+def run_command(cmd, cwd=None, timeout=120):
+    """Run a shell command, return (stdout, stderr, exit_code)."""
+    log(f"Running: {cmd[:120]}...")
+    try:
+        result = subprocess.run(
+            cmd, shell=True, cwd=cwd, capture_output=True, text=True, timeout=timeout
+        )
+        log(f"Exit: {result.returncode} (stdout: {len(result.stdout)}b, stderr: {len(result.stderr)}b)")
+        return result.stdout[-3000:], result.stderr[-2000:], result.returncode
+    except subprocess.TimeoutExpired:
+        log(f"Command timed out after {timeout}s")
+        return "", "TIMEOUT", -1
+    except Exception as e:
+        log(f"Command error: {e}")
+        return "", str(e), -1
+
+
+def write_report(instruction_data, succeeded, failed, changed_files, project_state):
+    """Write a structured report to outbox/."""
+    project = instruction_data.get("project", "unknown")
+    now = now_ts()
+    mid = f"{now}~{project}~executor~p{os.getpid()}"
+    filename = f"{mid}.status.json"
+
+    report = {
+        "id": mid,
+        "project": project,
+        "direction": "cli_to_manager",
+        "type": "status_report",
+        "created_at": now_iso(),
+        "from": "executor",
+        "to": "manager",
+        "payload": {
+            "what_was_attempted": instruction_data.get("instruction", "execute task"),
+            "what_succeeded": succeeded,
+            "what_failed": failed,
+            "project_state": project_state,
+        }
+    }
+
+    dest = os.path.join(OUTBOX, filename)
+    with open(dest, "w") as f:
+        json.dump(report, f, indent=2)
+    log(f"Report written: {dest}")
+    return filename
+
+
+# ── Agent Logic ──────────────────────────────────────────────────────
+
+EXECUTOR_PROMPT = """You are an executor AI. You receive instructions from a manager and execute them.
+
+Your job is to:
+1. Understand the instruction
+2. Plan what commands to run and files to modify
+3. Think step by step
+4. Output a JSON plan with:
+   - commands: list of shell commands to run (cd to project directory as needed)
+   - files_to_modify: list of files and their new content
+   - explanation: brief summary of your approach
+
+The commands run in the project directory. Available tools: git, npm, npx, node, python3, cat, grep, find, sed, curl.
+
+Be specific. For each file you need to modify, show the exact content replacement.
+
+Respond with ONLY a JSON object, no markdown, no code fences. Format:
+{
+  "commands": ["command1", "command2"],
+  "files_to_modify": [{"path": "file.txt", "content": "new content"}],
+  "explanation": "brief summary"
+}
+
+If the task is already done or cannot be done, respond with:
+{
+  "done": true,
+  "explanation": "why it is done or cannot be done"
+}
+"""
+
+
+def process_instruction(path):
+    """Process a single instruction: read, plan, execute, report."""
+    instruction = read_json(path)
+    cmd = instruction.get("command", "?")
+    instr_text = instruction.get("instruction", "")
+    project_name = instruction.get("project", instruction.get("project", "unknown"))
+
+    log(f"Processing: {cmd} — {instr_text[:60]}...")
+
+    # Step 1: Call LLM to plan execution
+    messages = [
+        {"role": "user", "content": EXECUTOR_PROMPT},
+        {"role": "user", "content": f"## Instruction\n\n{json.dumps(instruction, indent=2)}"},
+    ]
+
+    log("Planning execution...")
+    plan_text = call_llm(messages)
+    if not plan_text:
+        log("LLM planning failed")
+        return
+
+    # Parse plan JSON
+    plan_text = plan_text.strip()
+    if plan_text.startswith("```"):
+        plan_text = plan_text.split("\n", 1)[1]
+    if plan_text.endswith("```"):
+        plan_text = plan_text.rsplit("```", 1)[0]
+    plan_text = plan_text.strip()
+
+    try:
+        plan = json.loads(plan_text)
+    except json.JSONDecodeError:
+        log(f"LLM response was not valid JSON: {plan_text[:200]}...")
+        return
+
+    # If plan says done, skip execution
+    if plan.get("done"):
+        log(f"Task already done or cannot be done: {plan.get('explanation', '')}")
+        succeeded = [f"Task status: {plan.get('explanation', '')}"]
+        failed = []
+        changed = []
+        project_state = {
+            "project": project_name,
+            "task": {"id": instruction.get("id", "?"), "description": instr_text[:80], "status": "complete"},
+            "repo": {"branch": "?", "last_commit": "?", "working_tree": "?"},
+            "next_recommended_action": "Review report and decide next step",
+        }
+        write_report(instruction, succeeded, failed, changed, project_state)
+        return
+
+    # Step 2: Write files
+    succeeded = []
+    failed = []
+    changed_files = []
+
+    for file_spec in plan.get("files_to_modify", []):
+        file_path = file_spec.get("path", "")
+        content = file_spec.get("content", "")
+        if not file_path:
+            continue
+        try:
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(file_path) or ".", exist_ok=True)
+            with open(file_path, "w") as f:
+                f.write(content)
+            changed_files.append(file_path)
+            succeeded.append(f"Wrote {file_path}")
+            log(f"Wrote file: {file_path}")
+        except Exception as e:
+            failed.append(f"Failed to write {file_path}: {e}")
+            log(f"File write error: {e}")
+
+    # Step 3: Run commands
+    for cmd_text in plan.get("commands", []):
+        if not cmd_text.strip():
+            continue
+        stdout, stderr, code = run_command(cmd_text, timeout=120)
+        if code == 0:
+            succeeded.append(f"Command OK: {cmd_text[:60]}")
+        else:
+            failed.append(f"Command failed ({code}): {cmd_text[:60]}")
+            failed.append(f"stderr: {stderr[:200]}")
+
+        # If command failed, try one auto-fix with LLM
+        if code != 0 and len(failed) < 3:
+            log("Attempting auto-fix...")
+            fix_messages = [
+                {"role": "user", "content": "The command failed. Analyze the error and provide a fix."},
+                {"role": "user", "content": f"Command: {cmd_text}\n\nExit code: {code}\n\nStdout: {stdout[-1000:]}\n\nStderr: {stderr[:1000]}"},
+            ]
+            fix = call_llm(fix_messages)
+            if fix:
+                log(f"Auto-fix suggestion: {fix[:100]}...")
+
+    # Step 4: Verify (run checks if specified)
+    for check in instruction.get("success_criteria", []):
+        log(f"Check not auto-verified: {check}")
+
+    # Step 5: Write report
+    try:
+        stdout, _, _ = run_command("git rev-parse --abbrev-ref HEAD 2>/dev/null && git log --oneline -1 2>/dev/null", timeout=10)
+        git_lines = stdout.strip().split("\n") if stdout else ["?", "?"]
+        branch = git_lines[0] if len(git_lines) > 0 else "?"
+        commit = git_lines[1] if len(git_lines) > 1 else "?"
+    except Exception:
+        branch = "?"
+        commit = "?"
+
+    project_state = {
+        "project": project_name,
+        "task": {
+            "id": instruction.get("id", "?"),
+            "description": instr_text[:80],
+            "status": "in_progress" if failed else "complete",
+        },
+        "repo": {"branch": branch, "last_commit": commit, "working_tree": "?"},
+        "next_recommended_action": "Fix remaining issues" if failed else "Review report and decide",
+    }
+
+    if failed:
+        project_state["next_recommended_action"] = f"Fix {len(failed)} failure(s) or redirect"
+
+    write_report(instruction, succeeded, failed, changed_files, project_state)
+    log("Instruction complete.")
+
+
+def main():
+    log(f"Starting (model={API_MODEL})")
+
+    # Find oldest unprocessed instruction
+    files = list_json_files(INBOX)
+    if not files:
+        log("No pending instructions.")
+        return
+
+    path = files[0]
+    process_instruction(path)
+
+    # ACK the instruction after processing
+    import shutil
+    archive_dir = os.path.join(BACP_ROOT, "archive", "received")
+    os.makedirs(archive_dir, exist_ok=True)
+    dest = os.path.join(archive_dir, os.path.basename(path))
+    shutil.move(path, dest)
+    log(f"Archived: {dest}")
+
+
+if __name__ == "__main__":
+    if "--watch" in sys.argv:
+        import time as _time
+        interval = 5
+        processed = set()
+        print(f"Executor watch started (polling every {interval}s). Ctrl+C to stop.")
+        try:
+            while True:
+                files = list_json_files(INBOX)
+                for f in files:
+                    fname = os.path.basename(f)
+                    if fname not in processed:
+                        processed.add(fname)
+                        main()
+                _time.sleep(interval)
+        except KeyboardInterrupt:
+            print("\nExecutor watch stopped.")
+    else:
+        main()

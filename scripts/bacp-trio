@@ -225,10 +225,15 @@ You are the executor in a multi-agent trio with manager and terminal panes.
     await setup_pane(manager_session, "Manager", manager_root(project), manager_startup)
 
     # --- Setup Executor Pane (top-right) ---
+    # Automated executor — no Claude Code, calls LLM directly, runs commands
     if project_path:
         executor_startup = [
-            "echo 'Starting Executor AI...'",
-            "claude",
+            f"export BACP_ROOT={BACP_ROOT}",
+            f"export ANTHROPIC_API_KEY={api_key}",
+            f"export ANTHROPIC_BASE_URL={api_url}",
+            f"export ANTHROPIC_MODEL={api_model}",
+            "echo 'Starting Executor AI (bacp-executor)...'",
+            "bacp-executor --watch",
         ]
         await setup_pane(executor_session, "Executor", project_path, executor_startup)
     else:
