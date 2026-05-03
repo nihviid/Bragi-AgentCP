@@ -49,6 +49,16 @@ That is the entire loop. Each step is one command.
 
 ---
 
+### Ack vs `--ack-source`: When to Use Each
+
+Use `ack <id>` after reading an instruction but before starting work. This archives the instruction so the queue stays clean.
+
+Use `write-report --ack-source <id>` when the instruction and report form one unit — the source is archived automatically when the report is written.
+
+**Do not use both.** If you `ack` an instruction and later pass the same ID to `--ack-source`, the second call produces a harmless warning ("source not found") because the file is already archived. Pick one path per instruction.
+
+---
+
 ## Available Commands
 
 | Command | Purpose |
