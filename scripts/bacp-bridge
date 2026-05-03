@@ -4,13 +4,27 @@
 Reduces manual copy/paste friction by automating filesystem operations
 on the bridge directory (~/.bragi/agent-control-plane/).
 
-P0 Commands: status, next-report, write-instruction, archive
+Commands:
+  status              Show bridge health and queue counts
+  next-report         Show oldest pending CLI-to-manager report
+  next-instruction    Show oldest pending manager-to-CLI instruction
+  write-instruction   Write manager instruction (from stdin) to inbox
+  decisions           Show pending and answered decisions
+  archive <id>        Move processed message to archive
+  ack <id>            Archive a consumed message
+  stop                Activate STOP kill switch
+  resume              Deactivate STOP kill switch
 
 Usage:
   bacp-bridge status
   bacp-bridge next-report
+  bacp-bridge next-instruction
   echo '<json>' | bacp-bridge write-instruction
+  bacp-bridge decisions
   bacp-bridge archive <path-or-id>
+  bacp-bridge ack <path-or-id>
+  bacp-bridge stop
+  bacp-bridge resume
 
 Environment:
   BACP_ROOT  Override the default control-plane root path
@@ -370,6 +384,153 @@ def cmd_archive(target):
     log("archive", f"{path} → {dest}", "ok")
 
 
+# ── P1 Commands ────────────────────────────────────────────────────────
+
+def cmd_next_instruction():
+    guard_not_stopped()
+
+    files = list_json_files(INBOX_MC)
+    if not files:
+        ok("No pending instructions in inbox/manager-to-cli/.")
+        return
+
+    path = files[0]
+    filename = os.path.basename(path)
+    data = read_json(path)
+    cmd = data.get("command", data.get("type", "?"))
+    proj = data.get("project", "?")
+    ts = data.get("created_at", "?")
+
+    sep = "─" * 60
+    print(sep)
+    print(f"PENDING INSTRUCTION: {filename}")
+    print(f"Project: {proj} | Command: {cmd}")
+    print(f"Created: {ts}")
+    print(sep)
+    print("")
+    print(json.dumps(data, indent=2))
+    print("")
+    print(sep)
+    print(" PROCESS THIS INSTRUCTION")
+    print("   Read the instruction above and continue working.")
+    print("   After completing, run:")
+    print("     bacp-bridge ack <id>")
+    print("   Then write a status report to outbox/cli-to-manager/.")
+    print(sep)
+
+    log("next-instruction", path, "ok")
+
+
+def cmd_decisions():
+    guard_not_stopped()
+
+    pending_files = list_json_files(DECISIONS_PENDING)
+    answered_files = list_json_files(DECISIONS_ANSWERED)
+
+    print(f"Pending decisions:  {len(pending_files)}")
+    print(f"Answered decisions: {len(answered_files)}")
+    print("")
+
+    if pending_files:
+        print("─" * 60)
+        print("PENDING DECISIONS")
+        print("─" * 60)
+        for f in pending_files:
+            try:
+                data = read_json(f)
+                title = data.get("payload", {}).get("title", data.get("subject", "?"))
+                proj = data.get("project", "?")
+                fname = os.path.basename(f)
+                print(f"  • [{proj}] {title}")
+                print(f"    {fname}")
+            except Exception:
+                print(f"  • {os.path.basename(f)} (unreadable)")
+
+    if answered_files:
+        print("")
+        print("─" * 60)
+        print("ANSWERED DECISIONS")
+        print("─" * 60)
+        for f in reversed(answered_files[-10:]):  # show last 10
+            try:
+                data = read_json(f)
+                title = data.get("payload", {}).get("title", data.get("subject", "?"))
+                proj = data.get("project", "?")
+                fname = os.path.basename(f)
+                print(f"  • [{proj}] {title}")
+                print(f"    {fname}")
+            except Exception:
+                pass
+    print("")
+
+    log("decisions", ROOT, "ok")
+
+
+def cmd_stop():
+    if is_stopped():
+        ok(f"Bridge is already HALTED. {STOP} exists.")
+        return
+
+    print("⚠  WARNING: This will halt ALL bridge operations.", file=sys.stderr)
+    print(f"  STOP will be written to: {STOP}", file=sys.stderr)
+    print(file=sys.stderr)
+
+    try:
+        response = input("Are you sure? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("")
+        die("Cancelled.")
+
+    if response not in ("y", "yes"):
+        ok("Stop cancelled.")
+        return
+
+    content = (
+        f"Bridge halted by human at {datetime.datetime.utcnow().isoformat()}Z\n"
+        f"Reason: invoked via bacp-bridge stop\n"
+        f"To resume: run 'bacp-bridge resume' or delete this file.\n"
+    )
+    try:
+        with open(STOP, "w") as f:
+            f.write(content)
+    except OSError as e:
+        die(f"Cannot write STOP: {e}")
+
+    print("✓ Bridge is now HALTED.")
+    log("stop", STOP, "ok")
+
+
+def cmd_resume():
+    if not is_stopped():
+        ok("Bridge is already ACTIVE. No STOP file present.")
+        return
+
+    print("⚠  This will reactivate bridge operations.", file=sys.stderr)
+    try:
+        response = input("Resume bridge operations? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("")
+        die("Cancelled.")
+
+    if response not in ("y", "yes"):
+        ok("Resume cancelled.")
+        return
+
+    try:
+        os.remove(STOP)
+    except OSError as e:
+        die(f"Cannot remove STOP: {e}")
+
+    print("✓ Bridge is now ACTIVE.")
+    log("resume", STOP, "ok")
+
+
+def cmd_ack(target):
+    """Archive a consumed message (acknowledgement). Same as archive but with ack semantics."""
+    cmd_archive(target)
+    log("ack", target, "ok")
+
+
 # ── Main ───────────────────────────────────────────────────────────────
 
 def main():
@@ -388,6 +549,18 @@ def main():
             cmd_next_report()
         elif command == "write-instruction":
             cmd_write_instruction()
+        elif command == "next-instruction":
+            cmd_next_instruction()
+        elif command == "decisions":
+            cmd_decisions()
+        elif command == "stop":
+            cmd_stop()
+        elif command == "resume":
+            cmd_resume()
+        elif command == "ack":
+            if len(sys.argv) < 3:
+                die("Usage: bacp-bridge ack <message-path-or-id>")
+            cmd_ack(sys.argv[2])
         elif command == "archive":
             if len(sys.argv) < 3:
                 die("Usage: bacp-bridge archive <message-path-or-id>")
