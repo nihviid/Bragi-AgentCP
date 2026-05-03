@@ -219,24 +219,14 @@ You are the executor in a multi-agent trio. The manager sends instructions throu
     await setup_pane(manager_session, "Manager", manager_root(project), manager_startup)
 
     # --- Setup Executor Pane (top-right) ---
-    # Automated Claude Code — polls NOTIFY flag, runs claude -p headlessly
-    # Full Claude Code tooling (code gen, file editing) without manual intervention
+    # Automated Claude Code via dedicated script (reliable, no bash mangling)
     if project_path:
-        executor_loop = f"""
-while true; do
-  flag="{BACP_ROOT}/NOTIFY-EXECUTOR-{project_upper}"
-  if [ -f "$flag" ]; then
-    rm -f "$flag"
-    claude -p "A new instruction has arrived via bacp-bridge. Run 'bacp-bridge next-instruction' to read it, execute it using your full tool set (read/write files, run shell commands, git), report back with 'bacp-bridge write-report', and ACK with 'bacp-bridge ack <id>'. If you need to ask a question or flag a decision, include it in your report. Do NOT ask the human — work autonomously."
-  fi
-  sleep 5
-done"""
         executor_startup = [
             f"export BACP_ROOT={BACP_ROOT}",
             f"export BACP_PROJECT={project_upper}",
             'export PATH="$HOME/bin:$HOME/.local/bin:$PATH"',
-            "echo 'Executor: polling for instructions every 5s...'",
-            executor_loop,
+            f"echo 'Executor: polling NOTIFY-EXECUTOR-{project_upper} every 5s...'",
+            f"bacp-executor-loop {project_upper}",
         ]
         await setup_pane(executor_session, "Executor", project_path, executor_startup)
     else:

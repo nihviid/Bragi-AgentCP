@@ -247,6 +247,9 @@ def main():
     # Call LLM
     log("Calling LLM...")
     response = call_llm(messages)
+    if response is None:
+        log("LLM returned no response. Skipping cycle.")
+        return
     log(f"LLM responded ({len(response)} chars)")
 
     # Write instruction
@@ -312,8 +315,13 @@ if __name__ == "__main__":
                     cycle_count = 0
                     log(f"Processing report (cycle {cycle_count})")
                     import subprocess as _sp
-                    _sp.run(["bacp-bridge", "activity"], capture_output=True)  # ensure activity log exists
-                    main()
+                    _sp.run(["bacp-bridge", "activity"], capture_output=True)
+                    try:
+                        main()
+                    except Exception as e:
+                        log(f"Error in main: {e}")
+                        import traceback
+                        log(traceback.format_exc())
                 _time.sleep(interval)
         except KeyboardInterrupt:
             print("\nManager watch stopped.")

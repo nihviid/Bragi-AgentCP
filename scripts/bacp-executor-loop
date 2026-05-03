@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# BACP Executor Loop — polls NOTIFY-EXECUTOR flag, runs claude -p headlessly.
+# More reliable than inline bash in iTerm2 async_send_text.
+# Usage: bacp-executor-loop <project>
+
+set -e
+
+PROJECT="${1:-PORTAL}"
+BACP_ROOT="${BACP_ROOT:-$HOME/.bragi/agent-control-plane}"
+FLAG="$BACP_ROOT/NOTIFY-EXECUTOR-$PROJECT"
+
+echo "Executor loop: polling NOTIFY-EXECUTOR-$PROJECT every 5s"
+echo "  Flag: $FLAG"
+
+while true; do
+  if [ -f "$FLAG" ]; then
+    rm -f "$FLAG"
+    echo "$(date -u +%H:%M:%S) Flag detected. Running claude -p..."
+    claude -p "A new instruction has arrived via bacp-bridge. Run 'bacp-bridge next-instruction' to read it, execute it using your full tool set (read/write files, run shell commands, git), report back with 'bacp-bridge write-report', and ACK with 'bacp-bridge ack <id>'. If you need to ask a question or flag a decision, include it in your report. Do NOT ask the human — work autonomously." 2>&1
+    echo "$(date -u +%H:%M:%S) claude -p completed."
+  fi
+  sleep 5
+done
