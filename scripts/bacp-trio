@@ -194,8 +194,10 @@ You are the executor in a multi-agent trio. The manager sends instructions throu
 
     # --- Setup Manager Pane (left) ---
     # Interactive Claude Code with isolated CLAUDE.md — full tooling
+    project_upper = project.upper()
     manager_startup = [
         f"export BACP_ROOT={BACP_ROOT}",
+        f"export BACP_PROJECT={project_upper}",
         'export PATH="$HOME/bin:$HOME/.local/bin:$PATH"',
         "echo 'Manager Claude ready — use bacp-bridge next-report to check for reports'",
         "claude",
@@ -207,6 +209,7 @@ You are the executor in a multi-agent trio. The manager sends instructions throu
     if project_path:
         executor_startup = [
             f"export BACP_ROOT={BACP_ROOT}",
+            f"export BACP_PROJECT={project_upper}",
             'export PATH="$HOME/bin:$HOME/.local/bin:$PATH"',
             "echo 'Executor Claude ready — use bacp-bridge next-instruction to read tasks'",
             "claude",

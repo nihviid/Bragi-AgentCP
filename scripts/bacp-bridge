@@ -86,8 +86,6 @@ DECISIONS_PENDING = os.path.join(ROOT, "decisions", "pending")
 DECISIONS_ANSWERED = os.path.join(ROOT, "decisions", "answered")
 LOGS = os.path.join(ROOT, "logs", "bridge.log")
 STOP = os.path.join(ROOT, "STOP")
-NOTIFY_MANAGER = os.path.join(ROOT, "NOTIFY-MANAGER")
-NOTIFY_EXECUTOR = os.path.join(ROOT, "NOTIFY-EXECUTOR")
 SCHEMAS = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "schemas", "manager-control"
@@ -166,11 +164,13 @@ def count_files(directory):
     return len(list_json_files(directory))
 
 
-def set_notify(target):
-    """Create a zero-byte notify flag for the target agent.
-    Target can be 'manager' or 'executor'.
-    The flag file is a lightweight signal — presence means new messages await."""
-    flag = NOTIFY_MANAGER if target == "manager" else NOTIFY_EXECUTOR
+def set_notify(target, project="bacp"):
+    """Create a zero-byte notify flag for a specific target agent and project.
+    Target: 'manager' or 'executor'
+    Project: project name (portal, appkit, msdk, etc.)
+    Flag file: NOTIFY-<TARGET>-<PROJECT> (e.g. NOTIFY-EXECUTOR-PORTAL)
+    This gives each project-agent pair its own signal — no cross-contamination."""
+    flag = os.path.join(ROOT, f"NOTIFY-{target.upper()}-{project.upper()}")
     try:
         open(flag, "w").close()
     except OSError:
@@ -448,7 +448,7 @@ def cmd_write_instruction(archive_source=None):
 
     print(f"Written: {dest}")
     log("write-instruction", dest, "ok")
-    set_notify("executor")
+    set_notify("executor", project)
 
     # --archive-source: archive the source message after successful write
     if archive_source:
@@ -512,7 +512,7 @@ def cmd_write_report(ack_source=None):
 
     print(f"Written: {dest}")
     log("write-report", dest, "ok")
-    set_notify("manager")
+    set_notify("manager", project)
 
     if ack_source:
         old_path = _resolve_message_path(ack_source)

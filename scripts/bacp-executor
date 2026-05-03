@@ -22,7 +22,10 @@ import subprocess
 BACP_ROOT = os.environ.get("BACP_ROOT", os.path.expanduser("~/.bragi/agent-control-plane"))
 INBOX = os.path.join(BACP_ROOT, "inbox", "manager-to-cli")
 OUTBOX = os.path.join(BACP_ROOT, "outbox", "cli-to-manager")
-NOTIFY_FLAG = os.path.join(BACP_ROOT, "NOTIFY-EXECUTOR")
+
+# Project: set via --project flag or BACP_PROJECT env var
+PROJECT = os.environ.get("BACP_PROJECT", "BAC")
+NOTIFY_FLAG = os.path.join(BACP_ROOT, f"NOTIFY-EXECUTOR-{PROJECT.upper()}")
 
 API_KEY = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY") or ""
 API_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
@@ -319,6 +322,16 @@ def main():
 
 
 if __name__ == "__main__":
+    # Parse --project flag
+    if "--project" in sys.argv:
+        idx = sys.argv.index("--project")
+        if idx + 1 < len(sys.argv):
+            PROJECT = sys.argv[idx + 1]
+            NOTIFY_FLAG = os.path.join(BACP_ROOT, f"NOTIFY-EXECUTOR-{PROJECT.upper()}")
+    elif os.environ.get("BACP_PROJECT"):
+        PROJECT = os.environ.get("BACP_PROJECT")
+        NOTIFY_FLAG = os.path.join(BACP_ROOT, f"NOTIFY-EXECUTOR-{PROJECT.upper()}")
+
     if "--watch" in sys.argv:
         import time as _time
         interval = 5
