@@ -119,59 +119,55 @@ def find_latest_report():
     return {"path": path, "data": data, "filename": os.path.basename(path)}
 
 
-def call_llm(messages):
-    """Call the LLM API via Anthropic or OpenAI-compatible format."""
+def call_llm(messages, retries=3):
+    """Call the LLM API via Anthropic or OpenAI-compatible format.
+    Retries on 5xx errors with exponential backoff (1s, 2s, 4s)."""
     import urllib.request
     import urllib.error
+    import time as _time
 
-    if USE_OPENAI_FORMAT:
-        # OpenAI /chat/completions format (LiteLLM, OpenAI, etc.)
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {API_KEY}",
-        }
-        # Convert Anthropic messages to OpenAI format
-        oai_messages = []
-        for m in messages:
-            oai_messages.append({"role": m["role"], "content": m["content"]})
-        body = json.dumps({
-            "model": API_MODEL,
-            "max_tokens": 4096,
-            "messages": oai_messages,
-        }).encode()
-        url = f"{API_URL}/chat/completions"
-        response_key = ["choices", 0, "message", "content"]
-    else:
-        # Anthropic /v1/messages format
-        headers = {
-            "Content-Type": "application/json",
-            "x-api-key": API_KEY,
-            "anthropic-version": "2023-06-01",
-        }
-        body = json.dumps({
-            "model": API_MODEL,
-            "max_tokens": 4096,
-            "messages": messages,
-        }).encode()
-        url = f"{API_URL}/v1/messages"
-        response_key = ["content", 0, "text"]
+    for attempt in range(retries + 1):
+        if attempt > 0:
+            wait = 2 ** (attempt - 1)
+            log(f"API retry {attempt}/{retries} after {wait}s")
+            _time.sleep(wait)
 
-    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        if USE_OPENAI_FORMAT:
+            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
+            oai_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+            body = json.dumps({"model": API_MODEL, "max_tokens": 4096, "messages": oai_messages}).encode()
+            url = f"{API_URL}/chat/completions"
+            response_key = ["choices", 0, "message", "content"]
+        else:
+            headers = {"Content-Type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01"}
+            body = json.dumps({"model": API_MODEL, "max_tokens": 4096, "messages": messages}).encode()
+            url = f"{API_URL}/v1/messages"
+            response_key = ["content", 0, "text"]
 
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            result = json.loads(resp.read())
-            # Navigate response_key to extract text
-            val = result
-            for key in response_key:
-                val = val[key]
-            return val
-    except urllib.error.HTTPError as e:
-        log(f"API error {e.code}: {e.read().decode()}")
-        sys.exit(1)
-    except Exception as e:
-        log(f"API error: {e}")
-        sys.exit(1)
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                result = json.loads(resp.read())
+                val = result
+                for key in response_key:
+                    val = val[key]
+                return val
+        except urllib.error.HTTPError as e:
+            code = e.code
+            detail = e.read().decode()[:200]
+            if 500 <= code < 600:
+                log(f"API error {code}: {detail[:80]} (retriable)")
+                continue
+            log(f"API error {code}: {detail[:80]} (fatal)")
+            return None
+        except Exception as e:
+            log(f"API error: {e}")
+            if attempt < retries:
+                continue
+            return None
+
+    log("API failed after all retries.")
+    return None
 
 
 def write_instruction(instruction_text, report_filename):
@@ -284,12 +280,29 @@ if __name__ == "__main__":
         interval = 5
         print(f"Manager watch started (polling every {interval}s). Ctrl+C to stop.")
         try:
+            cycle_count = 0
+            heartbeat_dir = os.path.join(BACP_ROOT, "heartbeats")
             while True:
+                cycle_count += 1
+                # Record heartbeat
+                os.makedirs(heartbeat_dir, exist_ok=True)
+                hb_file = os.path.join(heartbeat_dir, f"HEARTBEAT-MANAGER-{PROJECT.upper()}")
+                try:
+                    with open(hb_file, "w") as f:
+                        f.write(now_iso())
+                except OSError:
+                    pass
+                # Context pressure: auto-stop at cycle limit
+                if cycle_count > 30:
+                    log(f"Cycle {cycle_count}: stopping for fresh context. Restart to continue.")
+                    break
                 if os.path.isfile(NOTIFY_FLAG):
                     try:
                         os.remove(NOTIFY_FLAG)
                     except OSError:
                         pass
+                    # Reset cycle count on real work (not idle checks)
+                    cycle_count = 0
                     main()
                 _time.sleep(interval)
         except KeyboardInterrupt:

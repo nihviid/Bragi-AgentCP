@@ -86,6 +86,7 @@ DECISIONS_PENDING = os.path.join(ROOT, "decisions", "pending")
 DECISIONS_ANSWERED = os.path.join(ROOT, "decisions", "answered")
 LOGS = os.path.join(ROOT, "logs", "bridge.log")
 STOP = os.path.join(ROOT, "STOP")
+HEARTBEAT_DIR = os.path.join(ROOT, "heartbeats")
 SCHEMAS = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "schemas", "manager-control"
@@ -173,6 +174,20 @@ def set_notify(target, project="bacp"):
     flag = os.path.join(ROOT, f"NOTIFY-{target.upper()}-{project.upper()}")
     try:
         open(flag, "w").close()
+    except OSError:
+        pass
+
+
+def heartbeat(agent, project):
+    """Record a heartbeat timestamp. Creates HEARTBEAT-<AGENT>-<PROJECT>.
+    Agent: 'manager' or 'executor'. Content is ISO timestamp of last check-in.
+    Allows monitoring tools to detect stuck agents (no heartbeat >2min)."""
+    import datetime as _dt
+    os.makedirs(HEARTBEAT_DIR, exist_ok=True)
+    hb_file = os.path.join(HEARTBEAT_DIR, f"HEARTBEAT-{agent.upper()}-{project.upper()}")
+    try:
+        with open(hb_file, "w") as f:
+            f.write(_dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"))
     except OSError:
         pass
 
