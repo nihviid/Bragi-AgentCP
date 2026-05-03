@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bragi.control-plane/schemas/executor-report.schema.json",
+  "title": "Executor Report",
+  "description": "Detailed report from CLI executor to ChatGPT manager. Describes what was attempted, what succeeded, what failed, and what should happen next. Encompasses status_report, blocked, error, and information message types.",
+  "type": "object",
+  "required": [
+    "id", "project", "direction", "type", "from", "to",
+    "created_at", "payload"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique message identifier: TIMESTAMP~PROJECT~ROLE~PID~NONCE"
+    },
+    "project": {
+      "type": "string",
+      "enum": ["appkit", "portal", "msdk", "router", "bacp"]
+    },
+    "direction": {
+      "type": "string",
+      "const": "cli_to_manager"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["status_report", "blocked", "error", "information", "decision_request"],
+      "description": "Message type determines required payload fields"
+    },
+    "from": {
+      "type": "string",
+      "const": "executor"
+    },
+    "to": {
+      "type": "string",
+      "const": "manager"
+    },
+    "requires_response": {
+      "type": "boolean",
+      "description": "True if the executor is waiting for a manager response"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp with timezone"
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "current_task", "task_status", "action_taken", "commands_run",
+        "git_branch", "git_status",
+        "open_questions", "risks",
+        "next_recommended_action", "manager_instruction_needed"
+      ],
+      "properties": {
+        "current_task": {
+          "type": "string",
+          "description": "Description of the task currently being executed"
+        },
+        "task_status": {
+          "type": "string",
+          "enum": ["in_progress", "completed", "blocked", "failed", "idle", "killed"]
+        },
+        "action_taken": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "What was done since the last report"
+        },
+        "what_was_attempted": {
+          "type": "string",
+          "description": "What the executor intended to accomplish this cycle"
+        },
+        "what_succeeded": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Things that completed successfully"
+        },
+        "what_failed": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Things that failed or produced unexpected results"
+        },
+        "files_created": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "files_modified": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "files_deleted": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "commands_run": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Exact shell commands executed"
+        },
+        "file_level_changes": {
+          "type": "string",
+          "description": "Human-readable summary of what changed at the file level and why"
+        },
+        "git_branch": {
+          "type": "string"
+        },
+        "git_status": {
+          "type": "string",
+          "enum": ["clean", "dirty"]
+        },
+        "git_commits": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Recent commit messages (last 5)"
+        },
+        "uncommitted_changes": {
+          "type": "integer",
+          "description": "Count of uncommitted files"
+        },
+        "diff_summary": {
+          "type": "string",
+          "description": "Short summary of the diff"
+        },
+        "test_results": {
+          "type": "object",
+          "properties": {
+            "ran": { "type": "boolean" },
+            "total": { "type": "integer" },
+            "passed": { "type": "integer" },
+            "failed": { "type": "integer" },
+            "skipped": { "type": "integer" },
+            "failing_tests": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "output_snippet": {
+              "type": "string",
+              "description": "Relevant test output lines"
+            }
+          }
+        },
+        "build_results": {
+          "type": "object",
+          "properties": {
+            "ran": { "type": "boolean" },
+            "passed": { "type": "boolean" },
+            "output": { "type": "string" }
+          }
+        },
+        "lint_results": {
+          "type": "object",
+          "properties": {
+            "ran": { "type": "boolean" },
+            "errors": { "type": "integer" },
+            "warnings": { "type": "integer" },
+            "new_violations": { "type": "integer" }
+          }
+        },
+        "pr_status": {
+          "type": "object",
+          "properties": {
+            "checked": { "type": "boolean" },
+            "open_count": { "type": "integer" },
+            "prs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "number": { "type": "integer" },
+                  "title": { "type": "string" },
+                  "status": { "type": "string" },
+                  "checks": { "type": "string" },
+                  "review_status": { "type": "string" },
+                  "draft": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        },
+        "why_next_step_recommended": {
+          "type": "string",
+          "description": "Reasoning for the next_recommended_action — why this step and not another"
+        },
+        "open_questions": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "risks": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "blocked_reason": {
+          "type": "string",
+          "description": "If blocked, why (null otherwise)"
+        },
+        "next_recommended_action": {
+          "type": "string",
+          "description": "What the executor recommends as the next step"
+        },
+        "recommended_model": {
+          "type": "string",
+          "enum": ["haiku", "sonnet", "opus"],
+          "description": "Model the executor thinks is appropriate for the next task"
+        },
+        "manager_instruction_needed": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}
