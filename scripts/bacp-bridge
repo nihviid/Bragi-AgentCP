@@ -1062,6 +1062,44 @@ Paste manager instruction JSON below, then EOF:
     log("autocontrol", "completed", "ok")
 
 
+def cmd_autocontrol_watch(interval=5, archive_report=False):
+    """Watch mode: poll outbox/ for reports, run autocontrol relay for each."""
+    import time as _time
+
+    print(f"Autocontrol watch started. Polling every {interval}s. Ctrl+C to stop.")
+    log("autocontrol-watch", f"started interval={interval}", "ok")
+
+    # Track processed report filenames to avoid re-processing
+    processed = set()
+
+    try:
+        while True:
+            # Check STOP before every cycle
+            if is_stopped():
+                log("autocontrol-watch", "stopped by STOP file", "ok")
+                die("Bridge is HALTED. Autocontrol watch stopped.")
+
+            files = list_json_files(OUTBOX_CM)
+            unprocessed = [f for f in files if os.path.basename(f) not in processed]
+
+            if unprocessed:
+                # Run the single-pass relay for the oldest unprocessed report
+                cmd_autocontrol(archive_report=archive_report)
+                # Mark all currently visible files as processed
+                for f in files:
+                    processed.add(os.path.basename(f))
+                print("")
+            else:
+                sys.stdout.write(f"\rWaiting for reports... ({len(processed)} processed so far)   ")
+                sys.stdout.flush()
+
+            _time.sleep(interval)
+
+    except KeyboardInterrupt:
+        print("\nAutocontrol watch stopped by user.")
+        log("autocontrol-watch", "stopped by user", "ok")
+
+
 # ── Main ───────────────────────────────────────────────────────────────
 
 def main():
@@ -1093,7 +1131,13 @@ def main():
             cmd_write_report(ack_source=ack_src)
         elif command == "autocontrol":
             archive_report = consume_flag("--archive-report", has_value=False) or False
-            cmd_autocontrol(archive_report=archive_report)
+            watch_mode = consume_flag("--watch", has_value=False) or False
+            interval_val = consume_flag("--interval")
+            interval = int(interval_val) if interval_val is not None else 5
+            if watch_mode:
+                cmd_autocontrol_watch(interval=interval, archive_report=archive_report)
+            else:
+                cmd_autocontrol(archive_report=archive_report)
         elif command == "next-instruction":
             cmd_next_instruction()
         elif command == "decisions":
