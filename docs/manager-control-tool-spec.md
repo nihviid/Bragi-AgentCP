@@ -3,7 +3,7 @@
 **Bragi Agent Control Plane (BACP)**  
 **Date:** 2026-05-03  
 **Branch:** `agent/bootstrap-discovery`  
-**Status:** Specification (core implemented, consolidation needed)
+**Status:** Specification (implemented, consolidated)
 
 ---
 
