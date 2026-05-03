@@ -3,14 +3,15 @@
 
 Opens one iTerm2 window with four panes:
   ┌──────────────────┬──────────────────────────┐
-  │  MANAGER         │  EXECUTOR                │
-  │  (message bus)   │  (project + LLM)         │
+  │  MANAGER (auto)  │  EXECUTOR (auto)         │
+  │  bacp-manager    │  claude -p (headless)    │
+  │  --watch         │  polls every 5s          │
   │                  ├──────────────────────────┤
   │                  │  TERMINAL                │
   │                  │  (git, npm, playwright)  │
   ├──────────────────┴──────────────────────────┤
   │  WATCH                                       │
-  │  (live dashboard + human decisions)          │
+  │  (live dashboard + activity log)             │
   └──────────────────────────────────────────────┘
 
 Usage:
@@ -121,6 +122,8 @@ async def main(connection):
     os.makedirs(manager_root(project), exist_ok=True)
 
     # Write isolated CLAUDE.md for Manager (restricted to bridge operations)
+    # Note: bacp-manager --watch calls the LLM directly, not Claude Code.
+    # This CLAUDE.md is for the bacp-manager script's LLM prompt context.
     manager_claude = os.path.join(manager_root(project), "CLAUDE.md")
     with open(manager_claude, "w") as f:
         f.write(f"""# Manager Agent — {project_name}
@@ -138,11 +141,12 @@ Your role is manager for {project_name}. You control the executor through the me
 - Run terminal commands (git, npm, pytest)
 - Write code
 
-**Protocol:**
-1. Human will ask you to check for reports. Run `bacp-bridge next-report`
-2. Read the report, decompose the task into a clear instruction
-3. Write the instruction via `bacp-bridge write-instruction`
+**Automated flow:**
+1. Run `bacp-bridge next-report` to check for pending reports
+2. If a report exists for {project_name}, decompose the task
+3. Write a clear instruction via `bacp-bridge write-instruction`
 4. ACK the report with `bacp-bridge ack <id>`
+5. Repeat — do NOT ask the human for direction
 
 **Rules:**
 - One task = one objective
@@ -202,26 +206,37 @@ You are the executor in a multi-agent trio. The manager sends instructions throu
     executor_session = right_session  # top-right after split
 
     # --- Setup Manager Pane (left) ---
-    # Interactive Claude Code with isolated CLAUDE.md — full tooling
+    # Lightweight automated manager — reads reports, calls LLM, writes instructions
+    # Uses bacp-manager (not Claude Code) because the manager only needs LLM calls
     project_upper = project.upper()
     manager_startup = [
         f"export BACP_ROOT={BACP_ROOT}",
         f"export BACP_PROJECT={project_upper}",
         'export PATH="$HOME/bin:$HOME/.local/bin:$PATH"',
-        "echo 'Manager Claude ready — use bacp-bridge next-report to check for reports'",
-        "claude",
+        "echo 'Manager: polling for reports via bacp-manager...'",
+        "bacp-manager --watch",
     ]
     await setup_pane(manager_session, "Manager", manager_root(project), manager_startup)
 
     # --- Setup Executor Pane (top-right) ---
-    # Interactive Claude Code in project directory — full tooling
+    # Automated Claude Code — polls NOTIFY flag, runs claude -p headlessly
+    # Full Claude Code tooling (code gen, file editing) without manual intervention
     if project_path:
+        executor_loop = f"""
+while true; do
+  flag="{BACP_ROOT}/NOTIFY-EXECUTOR-{project_upper}"
+  if [ -f "$flag" ]; then
+    rm -f "$flag"
+    claude -p "A new instruction has arrived via bacp-bridge. Run 'bacp-bridge next-instruction' to read it, execute it using your full tool set (read/write files, run shell commands, git), report back with 'bacp-bridge write-report', and ACK with 'bacp-bridge ack <id>'. If you need to ask a question or flag a decision, include it in your report. Do NOT ask the human — work autonomously."
+  fi
+  sleep 5
+done"""
         executor_startup = [
             f"export BACP_ROOT={BACP_ROOT}",
             f"export BACP_PROJECT={project_upper}",
             'export PATH="$HOME/bin:$HOME/.local/bin:$PATH"',
-            "echo 'Executor Claude ready — use bacp-bridge next-instruction to read tasks'",
-            "claude",
+            "echo 'Executor: polling for instructions every 5s...'",
+            executor_loop,
         ]
         await setup_pane(executor_session, "Executor", project_path, executor_startup)
     else:
