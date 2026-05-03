@@ -74,6 +74,9 @@ Use `write-report --ack-source <id>` when the instruction and report form one un
 | `archive <id>` | Move processed message to archive |
 | `archive-all <queue>` | Archive all pending messages in a queue (reports, instructions, decisions) |
 | `ack <id>` | Archive a consumed message |
+| `task <project> <description>` | Create a new task — kicks off the control loop |
+| `activity [--lines <N>] [--follow]` | Show recent agent activity log |
+| `watch` | Live agent dashboard (queue, heartbeats, activity, alerts) |
 | `stop` | Halt all bridge operations (confirmation required) |
 | `resume` | Reactivate bridge operations (confirmation required) |
 
@@ -82,6 +85,12 @@ Flags:
 - `--archive-source <id>` on write-instruction archives the source report after writing
 
 Environment: `BACP_ROOT` overrides the default bridge path (`~/.bragi/agent-control-plane/`).
+
+Use `bacp-bridge task <project> "<description>"` to ingress a new task. This creates a report in outbox/ and signals the Manager, which writes an instruction for the Executor — the full automated loop.
+
+```
+bacp-bridge task portal "Fix the login button styling"
+```
 
 The `autocontrol` command automates the INSTRUCT step: it reads the oldest pending report, prints a manager prompt with the full report content, accepts a manager instruction from stdin, validates it, and writes it to the inbox — eliminating the first copy/paste handoff. Pass `--archive-report` to archive the source report after writing.
 

@@ -958,6 +958,61 @@ def cmd_log_activity():
     log("log-activity", f"{agent}/{project}/{action}", "ok")
 
 
+def cmd_task():
+    """Ingress a new task. Creates a report in outbox/ to kick off the control loop.
+    Usage: bacp-bridge task <project> <description>
+    Example: bacp-bridge task portal "Explore codebase and report structure"
+    """
+    guard_not_stopped()
+    if len(sys.argv) < 4:
+        die("Usage: bacp-bridge task <project> <description>")
+    project = sys.argv[2].lower()
+    description = " ".join(sys.argv[3:])
+    now = now_utc()
+    now_iso = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    pid = os.getpid()
+    nonce = make_nonce()
+    mid = f"{now}~{project}~executor~p{pid}~{nonce}"
+
+    report = {
+        "id": mid,
+        "project": project,
+        "direction": "cli_to_manager",
+        "type": "task_request",
+        "created_at": now_iso,
+        "from": "human",
+        "to": "manager",
+        "payload": {
+            "what_is_requested": description,
+            "project_state": {
+                "project": project,
+                "task": {
+                    "id": f"task-{nonce}",
+                    "description": description[:80],
+                    "status": "requested",
+                },
+                "repo": {"branch": "?", "last_commit": "?", "working_tree": "?"},
+                "next_recommended_action": f"Process task: {description[:60]}",
+            },
+        },
+    }
+
+    dest = os.path.join(OUTBOX_CM, f"{mid}.task.json")
+    try:
+        with open(dest, "w") as f:
+            json.dump(report, f, indent=2)
+    except OSError as e:
+        die(f"Cannot write task: {e}")
+
+    set_notify("manager", project)
+    log_activity("human", project, "task_created", description[:80])
+    log("task", dest, "ok")
+    print(f"Task created: {description}")
+    print(f"  Report: {dest}")
+    print(f"  Flag:   NOTIFY-MANAGER-{project.upper()}")
+    print(f"  The Manager will pick this up on the next poll cycle.")
+
+
 def cmd_activity():
     """Show recent activity log entries. Follow with --follow for live tail."""
     guard_not_stopped()
@@ -1340,6 +1395,8 @@ def main():
             cmd_decisions()
         elif command == "log-activity":
             cmd_log_activity()
+        elif command == "task":
+            cmd_task()
         elif command == "activity":
             cmd_activity()
         elif command == "watch":
