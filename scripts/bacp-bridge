@@ -12,6 +12,7 @@ Commands:
   next-instruction    Show oldest pending manager-to-CLI instruction
   write-instruction   Write manager instruction (from stdin) to inbox
   write-report        Write executor status report (from stdin) to outbox
+  autocontrol         Run autocontrol relay once (reads report, prompts manager)
   decisions           Show pending and answered decisions
   archive <id>        Move processed message to archive
   archive-all <queue> Archive all pending messages in a queue
@@ -28,6 +29,7 @@ Usage:
   bacp-bridge decisions [--json]
   bacp-bridge archive <path-or-id>
   bacp-bridge archive-all <queue> [--older-than <seconds>]
+  bacp-bridge autocontrol [--once] [--archive-report]
   bacp-bridge ack <path-or-id>
   bacp-bridge stop
   bacp-bridge resume
@@ -56,14 +58,19 @@ def set_json_mode():
         sys.argv.pop()
 
 
-def consume_flag(name):
-    """Consume a flag + value from argv, return value or None."""
+def consume_flag(name, has_value=True):
+    """Consume a flag from argv, return value or True for boolean flags."""
     for i, arg in enumerate(sys.argv):
-        if arg == name and i + 1 < len(sys.argv):
-            val = sys.argv[i + 1]
-            # Remove both the flag and its value
-            del sys.argv[i : i + 2]
-            return val
+        if arg == name:
+            if has_value:
+                if i + 1 < len(sys.argv):
+                    val = sys.argv[i + 1]
+                    del sys.argv[i : i + 2]
+                    return val
+                return None
+            else:
+                del sys.argv[i]
+                return True
     return None
 
 
@@ -949,6 +956,150 @@ def cmd_ack(target):
     log("ack", target, "ok")
 
 
+def cmd_autocontrol(archive_report=False):
+    """Run autocontrol relay: find oldest report, print manager prompt, read instruction, write to inbox."""
+    guard_not_stopped()
+
+    log("autocontrol", "started", "ok")
+
+    # Find oldest pending report
+    files = list_json_files(OUTBOX_CM)
+    if not files:
+        log("autocontrol", "no-reports", "ok")
+        print("No pending reports. Nothing to relay.")
+        return
+
+    path = files[0]
+    filename = os.path.basename(path)
+    try:
+        raw = read_file(path)
+        data = json.loads(raw)
+    except Exception:
+        die(f"Cannot read report: {path}")
+
+    fm = parse_filename_meta(filename)
+    proj = data.get("project") or fm["project"] or "(not set)"
+    ts = data.get("created_at") or fm["ts"] or "(not set)"
+
+    # Print manager prompt
+    sep = "━" * 60
+    header = f"""
+{sep}
+  MANAGER PROMPT — Autocontrol Relay
+  A new executor report is ready for review.
+
+  Report:   {filename}
+  Project:  {proj}
+  Created:  {ts}
+
+  Instructions:
+  1. Review the report below
+  2. Write your instruction as valid JSON
+  3. Paste it below and press Ctrl+D (or Ctrl+Z on Windows)
+
+{sep}
+  REPORT
+{sep}
+
+{json.dumps(data, indent=2)}
+
+{sep}
+  END OF REPORT
+{sep}
+
+Paste manager instruction JSON below, then EOF:
+"""
+    print(header.strip())
+    log("autocontrol", f"report: {filename}", "ok")
+
+    # Read manager response from stdin
+    try:
+        response_raw = sys.stdin.read()
+    except KeyboardInterrupt:
+        print("")
+        die("Interrupted.")
+
+    if not response_raw or not response_raw.strip():
+        die("No input received. Autocontrol cancelled.")
+
+    try:
+        instruction = json.loads(response_raw)
+    except json.JSONDecodeError as e:
+        die(f"Invalid JSON: {e}")
+
+    # Validate using existing instruction validation
+    errors = validate_instruction(instruction)
+    if errors:
+        for e in errors:
+            print(f"  Validation error: {e}", file=sys.stderr)
+        die("Instruction rejected. Fix errors and try again.")
+
+    # Write instruction using existing write-instruction logic
+    project = instruction.get("project", "bacp")
+    command = instruction.get("command", "instruction")
+    mid = make_message_id(project, "manager")
+    instr_filename = f"{mid}.{command}.json"
+    dest = os.path.join(INBOX_MC, instr_filename)
+
+    try:
+        with open(dest, "w") as f:
+            json.dump(instruction, f, indent=2)
+    except OSError as e:
+        die(f"Cannot write instruction: {e}")
+
+    print(f"\nInstruction written: {dest}")
+    log("autocontrol", f"instruction: {dest}", "ok")
+
+    # Optional: archive source report
+    if archive_report:
+        try:
+            archive_dest = _move_to_archive(path)
+            print(f"Report archived:     {archive_dest}")
+            log("autocontrol", f"archived: {archive_dest}", "ok")
+        except OSError as e:
+            print(f"Warning: could not archive report: {e}", file=sys.stderr)
+
+    log("autocontrol", "completed", "ok")
+
+
+def cmd_autocontrol_watch(interval=5, archive_report=False):
+    """Watch mode: poll outbox/ for reports, run autocontrol relay for each."""
+    import time as _time
+
+    print(f"Autocontrol watch started. Polling every {interval}s. Ctrl+C to stop.")
+    log("autocontrol-watch", f"started interval={interval}", "ok")
+
+    # Track processed report filenames to avoid re-processing
+    processed = set()
+
+    try:
+        while True:
+            # Check STOP before every cycle
+            if is_stopped():
+                log("autocontrol-watch", "stopped by STOP file", "ok")
+                die("Bridge is HALTED. Autocontrol watch stopped.")
+
+            files = list_json_files(OUTBOX_CM)
+            unprocessed = [f for f in files if os.path.basename(f) not in processed]
+
+            if unprocessed:
+                # Run the single-pass relay for the oldest unprocessed report
+                cmd_autocontrol(archive_report=archive_report)
+                # Mark all currently visible files as processed
+                for f in files:
+                    processed.add(os.path.basename(f))
+                print("")
+            else:
+                sys.stdout.write(f"\rWaiting for reports... ({len(processed)} processed so far)   ")
+                sys.stdout.flush()
+
+            _time.sleep(interval)
+
+    except KeyboardInterrupt:
+        print("\nAutocontrol watch stopped by user.")
+        log("autocontrol-watch", "stopped by user", "ok")
+
+
 # ── Main ───────────────────────────────────────────────────────────────
 
 def main():
@@ -978,6 +1129,15 @@ def main():
         elif command == "write-report":
             ack_src = consume_flag("--ack-source")
             cmd_write_report(ack_source=ack_src)
+        elif command == "autocontrol":
+            archive_report = consume_flag("--archive-report", has_value=False) or False
+            watch_mode = consume_flag("--watch", has_value=False) or False
+            interval_val = consume_flag("--interval")
+            interval = int(interval_val) if interval_val is not None else 5
+            if watch_mode:
+                cmd_autocontrol_watch(interval=interval, archive_report=archive_report)
+            else:
+                cmd_autocontrol(archive_report=archive_report)
         elif command == "next-instruction":
             cmd_next_instruction()
         elif command == "decisions":

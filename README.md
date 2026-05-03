@@ -83,6 +83,8 @@ Flags:
 
 Environment: `BACP_ROOT` overrides the default bridge path (`~/.bragi/agent-control-plane/`).
 
+The `autocontrol` command automates the INSTRUCT step: it reads the oldest pending report, prints a manager prompt with the full report content, accepts a manager instruction from stdin, validates it, and writes it to the inbox — eliminating the first copy/paste handoff. Pass `--archive-report` to archive the source report after writing.
+
 ---
 
 ## Current Limitations
