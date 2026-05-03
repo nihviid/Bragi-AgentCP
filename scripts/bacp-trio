@@ -198,8 +198,16 @@ You are the executor in a multi-agent trio with manager and terminal panes.
 
     # --- Setup Manager Pane (left) ---
     # Lightweight manager process — no Claude Code, no project access
+    # Pass through API configuration from the user's environment
+    api_key = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY") or ""
+    api_url = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+    api_model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
     manager_startup = [
         f"export BACP_ROOT={BACP_ROOT}",
+        f"export ANTHROPIC_API_KEY={api_key}",
+        f"export ANTHROPIC_AUTH_TOKEN={api_key}",
+        f"export ANTHROPIC_BASE_URL={api_url}",
+        f"export ANTHROPIC_MODEL={api_model}",
         "echo 'Starting Manager AI (bacp-manager)...'",
         "bacp-manager --watch",
     ]

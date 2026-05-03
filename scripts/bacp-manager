@@ -24,7 +24,7 @@ MEMORY_LOG = os.path.join(MEMORY_DIR, "manager-log.jsonl")
 OUTBOX = os.path.join(BACP_ROOT, "outbox", "cli-to-manager")
 INBOX = os.path.join(BACP_ROOT, "inbox", "manager-to-cli")
 
-API_KEY = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN") or ""
+API_KEY = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY") or ""
 API_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
 API_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 
