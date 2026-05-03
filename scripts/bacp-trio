@@ -114,6 +114,64 @@ async def main(connection):
     # Ensure manager isolation directory exists
     os.makedirs(MANAGER_ROOT, exist_ok=True)
 
+    # Write isolated CLAUDE.md for Manager (restricted to bridge operations)
+    manager_claude = os.path.join(MANAGER_ROOT, "CLAUDE.md")
+    with open(manager_claude, "w") as f:
+        f.write(f"""# Manager Agent — Bridge Operations Only
+
+Your role is manager. You control the executor through the message bus.
+
+**Access:**
+- Message bus: {BACP_ROOT}
+- bacp-bridge commands only
+
+**You CANNOT:**
+- Read or modify project files
+- Run terminal commands (git, npm, pytest)
+- Write code
+
+**Your job:**
+1. Read reports from `bacp-bridge next-report`
+2. Decompose tasks into clear instructions
+3. Write instructions via `bacp-bridge write-instruction`
+4. Verify executor reports against MOS quality gates
+5. Approve or redirect based on results
+
+**Rules:**
+- One task = one objective
+- Every instruction needs: objective, scope, constraints, success criteria
+- Do not expand scope mid-task
+- Route model selection: Haiku for routing, Sonnet for execution, Opus only for architecture/risk
+""")
+
+    # Write CLAUDE.md for Executor
+    executor_claude = None
+    if project_path:
+        executor_claude = os.path.join(project_path, "CLAUDE.md")
+        # Don't overwrite project's existing CLAUDE.md — append trio-specific notes
+        existing = ""
+        if os.path.isfile(executor_claude):
+            with open(executor_claude) as f:
+                existing = f.read()
+        if "# Trio" not in existing:
+            with open(executor_claude, "a") as f:
+                f.write(f"""
+# Trio Execution Notes
+
+You are the executor in a multi-agent trio with manager and terminal panes.
+
+**Protocol:**
+- Read instructions from: `bacp-bridge next-instruction`
+- ACK after reading: `bacp-bridge ack <id>`
+- Run terminal commands in the Terminal pane (bottom-right)
+- Report back via: `bacp-bridge write-report --ack-source <id>`
+
+**Boundaries:**
+- Do not expand task scope
+- Do not make architecture decisions without manager approval
+- Surface blockers immediately in reports
+""")
+
     # Create new window
     window = await iterm2.Window.async_create(connection)
     await asyncio.sleep(0.5)
@@ -131,34 +189,30 @@ async def main(connection):
     executor_session = right_session  # top-right after split
 
     # --- Setup Manager Pane (left) ---
-    # Isolated: no project access, message bus only
+    # Start Claude in isolated directory with manager CLAUDE.md
     manager_startup = [
-        f"export BACP_ROOT={BACP_ROOT}",
-        "echo 'Manager ready — waiting for reports...'",
-        # Start autocontrol watch (will wait for reports)
-        "bacp-bridge autocontrol --watch --interval 5",
+        "export CLAUDE_CLI_CONFIG_DIR=" + MANAGER_ROOT,
+        "echo 'Starting Manager AI...'",
+        "claude",
     ]
     await setup_pane(manager_session, "Manager", MANAGER_ROOT, manager_startup)
 
     # --- Setup Executor Pane (top-right) ---
-    executor_startup = [
-        "echo 'Executor ready — run bacp-bridge next-instruction to read tasks'",
-    ]
     if project_path:
+        executor_startup = [
+            "echo 'Starting Executor AI...'",
+            "claude",
+        ]
         await setup_pane(executor_session, "Executor", project_path, executor_startup)
     else:
         await setup_pane(executor_session, "Executor", MANAGER_ROOT,
-                        [f"echo 'Project {project} path not configured'"])
+                        ["echo 'No project path set'"])
 
     # --- Setup Terminal Pane (bottom-right) ---
-    terminal_startup = [
-        "echo 'Terminal ready — commands run here are visible to Executor'",
-    ]
     if project_path:
-        await setup_pane(terminal_session, "Terminal", project_path, terminal_startup)
+        await setup_pane(terminal_session, "Terminal", project_path, None)
     else:
-        await setup_pane(terminal_session, "Terminal", os.path.expanduser("~"),
-                        ["echo 'No project path set'"])
+        await setup_pane(terminal_session, "Terminal", os.path.expanduser("~"), None)
 
     print(f"BACP Trio launched: {project}")
     print(f"  Manager:  {MANAGER_ROOT}")
