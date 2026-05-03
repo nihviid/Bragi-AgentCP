@@ -224,6 +224,9 @@ def main():
         return
 
     log(f"Report found: {report['filename']}")
+    import subprocess as _sp2
+    _sp2.run(["bacp-bridge", "log-activity", "manager", PROJECT, "started", f"Processing: {report['filename']}"],
+             capture_output=True, timeout=10)
 
     # Read memory
     memory = read_memory(limit=10)
@@ -258,10 +261,15 @@ def main():
         "instruction_file": instr_filename or "failed",
     })
 
+    import subprocess as _sp3
     if instr_filename:
         log("Cycle complete.")
+        _sp3.run(["bacp-bridge", "log-activity", "manager", PROJECT, "complete",
+                  f"Wrote: {instr_filename}"], capture_output=True, timeout=10)
     else:
         log("Cycle failed — no instruction written.")
+        _sp3.run(["bacp-bridge", "log-activity", "manager", PROJECT, "failed",
+                  "No instruction written"], capture_output=True, timeout=10)
 
 
 if __name__ == "__main__":
@@ -301,8 +309,10 @@ if __name__ == "__main__":
                         os.remove(NOTIFY_FLAG)
                     except OSError:
                         pass
-                    # Reset cycle count on real work (not idle checks)
                     cycle_count = 0
+                    log(f"Processing report (cycle {cycle_count})")
+                    import subprocess as _sp
+                    _sp.run(["bacp-bridge", "activity"], capture_output=True)  # ensure activity log exists
                     main()
                 _time.sleep(interval)
         except KeyboardInterrupt:

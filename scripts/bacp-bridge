@@ -14,6 +14,8 @@ Commands:
   write-report        Write executor status report (from stdin) to outbox
   autocontrol         Run autocontrol relay once (reads report, prompts manager)
   decisions           Show pending and answered decisions
+  activity            Show recent activity log entries
+  watch               Live agent activity dashboard
   archive <id>        Move processed message to archive
   archive-all <queue> Archive all pending messages in a queue
   ack <id>            Archive a consumed message
@@ -85,6 +87,7 @@ ARCHIVE_RECV = os.path.join(ROOT, "archive", "received")
 DECISIONS_PENDING = os.path.join(ROOT, "decisions", "pending")
 DECISIONS_ANSWERED = os.path.join(ROOT, "decisions", "answered")
 LOGS = os.path.join(ROOT, "logs", "bridge.log")
+ACTIVITY_LOG = os.path.join(ROOT, "logs", "activity.jsonl")
 STOP = os.path.join(ROOT, "STOP")
 HEARTBEAT_DIR = os.path.join(ROOT, "heartbeats")
 SCHEMAS = os.path.join(
@@ -188,6 +191,27 @@ def heartbeat(agent, project):
     try:
         with open(hb_file, "w") as f:
             f.write(_dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"))
+    except OSError:
+        pass
+
+
+def log_activity(agent, project, action, detail=""):
+    """Append a structured activity entry to the activity log.
+    Agent: 'manager' or 'executor'. Action: short action name.
+    Detail: free-text description of what happened.
+    The activity log is a JSONL file that the watch pane tails."""
+    import datetime as _dt
+    os.makedirs(os.path.dirname(ACTIVITY_LOG), exist_ok=True)
+    entry = {
+        "ts": _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "agent": agent,
+        "project": project,
+        "action": action,
+        "detail": detail,
+    }
+    try:
+        with open(ACTIVITY_LOG, "a") as f:
+            f.write(json.dumps(entry) + "\n")
     except OSError:
         pass
 
@@ -921,6 +945,129 @@ def cmd_decisions():
     log("decisions", ROOT, "ok")
 
 
+def cmd_log_activity():
+    """Write an activity entry. Usage: bacp-bridge log-activity <agent> <project> <action> [detail]"""
+    guard_not_stopped()
+    if len(sys.argv) < 5:
+        die("Usage: bacp-bridge log-activity <agent> <project> <action> [detail...]")
+    agent = sys.argv[2]
+    project = sys.argv[3]
+    action = sys.argv[4]
+    detail = " ".join(sys.argv[5:]) if len(sys.argv) > 5 else ""
+    log_activity(agent, project, action, detail)
+    log("log-activity", f"{agent}/{project}/{action}", "ok")
+
+
+def cmd_activity():
+    """Show recent activity log entries. Follow with --follow for live tail."""
+    guard_not_stopped()
+    follow = consume_flag("--follow", has_value=False) or False
+    lines = consume_flag("--lines") or "20"
+
+    if not os.path.isfile(ACTIVITY_LOG):
+        print("No activity recorded yet.")
+        return
+
+    try:
+        n = int(lines)
+    except ValueError:
+        n = 20
+
+    if follow:
+        import subprocess as _sp
+        _sp.run(["tail", "-n", str(n), "-f", ACTIVITY_LOG])
+    else:
+        with open(ACTIVITY_LOG) as f:
+            all_lines = f.readlines()
+        tail = all_lines[-n:]
+        for line in tail:
+            try:
+                entry = json.loads(line.strip())
+                print(f"[{entry.get('ts','?')[-8:]}] {entry.get('agent','?').upper():8s} "
+                      f"{entry.get('action','?'):20s} {entry.get('detail','')[:80]}")
+            except json.JSONDecodeError:
+                print(line.strip())
+    log("activity", ACTIVITY_LOG, "ok")
+
+
+def cmd_watch():
+    """Live watch pane — shows activity, heartbeats, queue state, decision flags."""
+    guard_not_stopped()
+    import time as _time
+    import datetime as _dt
+    print("━" * 60)
+    print("  WATCH — Live agent activity dashboard")
+    print("  Ctrl+C to stop")
+    print("━" * 60)
+    last_activity_lines = 0
+    try:
+        while True:
+            os.system("clear")
+            now = _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+            print(f"=== BACP Dashboard — {now} ===")
+            print("")
+
+            # Queue state
+            inbox = count_files(INBOX_MC)
+            outbox = count_files(OUTBOX_CM)
+            dp = count_files(DECISIONS_PENDING)
+            da = count_files(DECISIONS_ANSWERED)
+            print(f"  Queue:  {inbox} pending instructions  |  {outbox} pending reports  |  {dp} pending decisions  |  {da} answered")
+            print("")
+
+            # Heartbeat status
+            print("  Agents:")
+            if os.path.isdir(HEARTBEAT_DIR):
+                for hb_file in sorted(os.listdir(HEARTBEAT_DIR)):
+                    hb_path = os.path.join(HEARTBEAT_DIR, hb_file)
+                    try:
+                        with open(hb_path) as f:
+                            hb_ts = f.read().strip()
+                        hb_dt = _dt.datetime.strptime(hb_ts, "%Y-%m-%dT%H:%M:%SZ")
+                        age = int((_dt.datetime.utcnow() - hb_dt).total_seconds())
+                        status = "🟢" if age < 30 else "🟡" if age < 120 else "🔴"
+                        print(f"    {status} {hb_file:30s} last heartbeat {age}s ago")
+                    except Exception:
+                        pass
+            print("")
+
+            # Recent activity
+            print("  Recent activity:")
+            if os.path.isfile(ACTIVITY_LOG):
+                with open(ACTIVITY_LOG) as f:
+                    all_lines = f.readlines()
+                for line in all_lines[-10:]:
+                    try:
+                        entry = json.loads(line.strip())
+                        age_s = "?"
+                        try:
+                            et = _dt.datetime.strptime(entry["ts"], "%Y-%m-%dT%H:%M:%SZ")
+                            age_s = str(int((_dt.datetime.utcnow() - et).total_seconds())) + "s ago"
+                        except Exception:
+                            pass
+                        print(f"    [{age_s:6s}] {entry.get('agent','?'):8s} "
+                              f"{entry.get('action','?'):20s} {entry.get('detail','')[:60]}")
+                    except json.JSONDecodeError:
+                        pass
+            print("")
+
+            # Pending decisions
+            if dp > 0:
+                print("  ⚠ DECISIONS REQUIRED — run bacp-bridge decisions to view")
+                for f in sorted(list_json_files(DECISIONS_PENDING))[:3]:
+                    try:
+                        d = read_json(f)
+                        title = d.get("payload", {}).get("title", d.get("subject", "?"))
+                        print(f"    • {title}")
+                    except Exception:
+                        pass
+                print("")
+
+            _time.sleep(5)
+    except KeyboardInterrupt:
+        print("\nWatch stopped.")
+
+
 def cmd_stop():
     if is_stopped():
         ok(f"Bridge is already HALTED. {STOP} exists.")
@@ -1172,6 +1319,12 @@ def main():
             cmd_next_instruction()
         elif command == "decisions":
             cmd_decisions()
+        elif command == "log-activity":
+            cmd_log_activity()
+        elif command == "activity":
+            cmd_activity()
+        elif command == "watch":
+            cmd_watch()
         elif command == "stop":
             cmd_stop()
         elif command == "resume":

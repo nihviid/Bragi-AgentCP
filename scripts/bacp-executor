@@ -195,6 +195,9 @@ def process_instruction(path):
     project_name = instruction.get("project", instruction.get("project", "unknown"))
 
     log(f"Processing: {cmd} — {instr_text[:60]}...")
+    import subprocess as _sp_log
+    _sp_log.run(["bacp-bridge", "log-activity", "executor", project_name, "started",
+                 f"{cmd}: {instr_text[:80]}"], capture_output=True, timeout=10)
 
     # Step 1: Call LLM to plan execution
     messages = [
@@ -311,6 +314,10 @@ def process_instruction(path):
 
     write_report(instruction, succeeded, failed, changed_files, project_state)
     log("Instruction complete.")
+    import subprocess as _sp_log2
+    status = "complete" if not failed else "partial"
+    _sp_log2.run(["bacp-bridge", "log-activity", "executor", project_name, status,
+                  f"{len(succeeded)} ok, {len(failed)} failed"], capture_output=True, timeout=10)
 
 
 def main():
