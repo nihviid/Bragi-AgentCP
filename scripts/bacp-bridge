@@ -90,6 +90,7 @@ LOGS = os.path.join(ROOT, "logs", "bridge.log")
 ACTIVITY_LOG = os.path.join(ROOT, "logs", "activity.jsonl")
 STOP = os.path.join(ROOT, "STOP")
 HEARTBEAT_DIR = os.path.join(ROOT, "heartbeats")
+TASKS_INCOMING = os.path.join(ROOT, "tasks", "incoming")
 SCHEMAS = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "schemas", "manager-control"
@@ -958,8 +959,15 @@ def cmd_log_activity():
     log("log-activity", f"{agent}/{project}/{action}", "ok")
 
 
+def _system_is_idle():
+    """Check if the system is idle (no pending work in progress).
+    Returns True if inbox and outbox are both empty.
+    Prevents task ingress from interrupting a running cycle."""
+    return count_files(INBOX_MC) == 0 and count_files(OUTBOX_CM) == 0
+
+
 def cmd_task():
-    """Ingress a new task. Creates a report in outbox/ to kick off the control loop.
+    """Queue a new task. Writes to tasks/incoming/ — ingressed when system is idle.
     Usage: bacp-bridge task <project> <description>
     Example: bacp-bridge task portal "Explore codebase and report structure"
     """
@@ -970,47 +978,110 @@ def cmd_task():
     description = " ".join(sys.argv[3:])
     now = now_utc()
     now_iso = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    pid = os.getpid()
     nonce = make_nonce()
-    mid = f"{now}~{project}~executor~p{pid}~{nonce}"
 
-    report = {
-        "id": mid,
+    task = {
+        "id": f"task-{nonce}",
         "project": project,
-        "direction": "cli_to_manager",
-        "type": "task_request",
+        "description": description,
         "created_at": now_iso,
-        "from": "human",
-        "to": "manager",
-        "payload": {
-            "what_is_requested": description,
-            "project_state": {
-                "project": project,
-                "task": {
-                    "id": f"task-{nonce}",
-                    "description": description[:80],
-                    "status": "requested",
-                },
-                "repo": {"branch": "?", "last_commit": "?", "working_tree": "?"},
-                "next_recommended_action": f"Process task: {description[:60]}",
-            },
-        },
+        "status": "queued",
     }
 
-    dest = os.path.join(OUTBOX_CM, f"{mid}.task.json")
+    os.makedirs(TASKS_INCOMING, exist_ok=True)
+    dest = os.path.join(TASKS_INCOMING, f"{now}~{project}~{nonce}.json")
     try:
         with open(dest, "w") as f:
-            json.dump(report, f, indent=2)
+            json.dump(task, f, indent=2)
     except OSError as e:
-        die(f"Cannot write task: {e}")
+        die(f"Cannot queue task: {e}")
 
-    set_notify("manager", project)
-    log_activity("human", project, "task_created", description[:80])
-    log("task", dest, "ok")
-    print(f"Task created: {description}")
-    print(f"  Report: {dest}")
-    print(f"  Flag:   NOTIFY-MANAGER-{project.upper()}")
-    print(f"  The Manager will pick this up on the next poll cycle.")
+    log_activity("human", project, "task_queued", description[:80])
+    log("task", dest, "queued")
+    print(f"Task queued: {description}")
+    print(f"  File: {dest}")
+    if _system_is_idle():
+        print("  System is idle — task will be ingressed on next dashboard refresh.")
+    else:
+        print("  System is busy — task will auto-ingress when current cycle completes.")
+    print(f"  View in Watch dashboard or run: bacp-bridge ingress --once")
+
+
+def cmd_ingress():
+    """Ingress queued tasks when system is idle.
+    Moves tasks from tasks/incoming/ → outbox/ and signals the Manager.
+    Only ingresses when inbox and outbox are empty (no cycle in progress).
+    Usage: bacp-bridge ingress [--once]
+    """
+    guard_not_stopped()
+    if not os.path.isdir(TASKS_INCOMING):
+        print("No queued tasks.")
+        return
+
+    files = sorted(glob.glob(os.path.join(TASKS_INCOMING, "*.json")), key=os.path.getmtime)
+    if not files:
+        print("No queued tasks.")
+        return
+
+    if not _system_is_idle():
+        print(f"System is busy ({count_files(INBOX_MC)} instructions, {count_files(OUTBOX_CM)} reports pending).")
+        print(f"Task will auto-ingress when current cycle completes.")
+        return
+
+    for path in files:
+        try:
+            with open(path) as f:
+                task = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            log("ingress", path, f"error: {e}")
+            continue
+
+        project = task.get("project", "bacp")
+        description = task.get("description", "unknown")
+        now = now_utc()
+        now_iso = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        pid = os.getpid()
+        nonce = make_nonce()
+        mid = f"{now}~{project}~executor~p{pid}~{nonce}"
+
+        report = {
+            "id": mid,
+            "project": project,
+            "direction": "cli_to_manager",
+            "type": "task_request",
+            "created_at": now_iso,
+            "from": "human",
+            "to": "manager",
+            "payload": {
+                "what_is_requested": description,
+                "project_state": {
+                    "project": project,
+                    "task": {
+                        "id": task.get("id", f"task-{nonce}"),
+                        "description": description[:80],
+                        "status": "requested",
+                    },
+                    "repo": {"branch": "?", "last_commit": "?", "working_tree": "?"},
+                    "next_recommended_action": f"Process task: {description[:60]}",
+                },
+            },
+        }
+
+        dest = os.path.join(OUTBOX_CM, f"{mid}.task.json")
+        try:
+            with open(dest, "w") as f:
+                json.dump(report, f, indent=2)
+        except OSError as e:
+            log("ingress", dest, f"write error: {e}")
+            continue
+
+        set_notify("manager", project)
+        log_activity("human", project, "task_ingressed", description[:80])
+        log("ingress", f"{path} → {dest}", "ok")
+        os.remove(path)
+        print(f"Ingressed: {description[:60]} → outbox/ + NOTIFY-MANAGER-{project.upper()}")
+
+    print("Done.")
 
 
 def cmd_activity():
@@ -1136,6 +1207,29 @@ def cmd_watch():
                     except Exception:
                         pass
                 print("")
+
+            # Auto-ingress queued tasks when system is idle
+            if os.path.isdir(TASKS_INCOMING):
+                pending_tasks = list_json_files(TASKS_INCOMING)
+                if pending_tasks:
+                    print(f"  Queued tasks ({len(pending_tasks)}):")
+                    for f in pending_tasks[:5]:
+                        try:
+                            d = read_json(f)
+                            desc = d.get("description", "?")[:60]
+                            proj = d.get("project", "?")
+                            print(f"    ⏳ [{proj}] {desc}")
+                        except Exception:
+                            print(f"    ⏳ {os.path.basename(f)}")
+                    if len(pending_tasks) > 5:
+                        print(f"    ... and {len(pending_tasks) - 5} more")
+                    # Auto-ingress if system is idle
+                    if _system_is_idle():
+                        print("  → System idle. Ingressing queued tasks...")
+                        import subprocess as _sp_i
+                        _sp_i.run(["bacp-bridge", "ingress"],
+                                  capture_output=True, timeout=30)
+                    print("")
 
             _time.sleep(5)
     except KeyboardInterrupt:
@@ -1397,6 +1491,8 @@ def main():
             cmd_log_activity()
         elif command == "task":
             cmd_task()
+        elif command == "ingress":
+            cmd_ingress()
         elif command == "activity":
             cmd_activity()
         elif command == "watch":
