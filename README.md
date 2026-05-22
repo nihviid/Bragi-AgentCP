@@ -1,135 +1,85 @@
-# BACP — Bragi Agent Control Plane
+# Bragi-AgentCP
 
-A local CLI tool that enables a ChatGPT manager to control a CLI executor through a structured filesystem bridge.
+> ⚠️ This repository is FROZEN as of 22 May 2026.
+>
+> Active development has moved to the productization-agent and governance
+> mechanism in `bragi-platform`. Do not commit here.
+> Existing code remains as historical reference.
+>
+> If you arrived here from a search or link, see `bragi-platform` for current
+> autonomous-work and reviewer-gate mechanisms.
 
-```
-Manager (ChatGPT) ←──(human clipboard)──→ CLI executor (bacp-bridge)
-```
+**Federation role:** Frozen
+**Bubble owner:** Platform governance bubble
+**Implementation state:** Historical local agent-control prototype; current durable mechanism is in `bragi-platform`.
+**Status:** Frozen
 
-The tool is `scripts/bacp-bridge`. The bridge lives at `~/.bragi/agent-control-plane/`.
+## What this is
 
----
+This repository contains an older local agent control-plane idea. It may still
+be useful as reference for agent handoff patterns, but it is not the active
+federation mechanism.
 
-## What Problem It Solves
+Current productization-agent workflow, autonomous continuation flags, review
+packets, and hard-stop discipline live in `bragi-platform`.
 
-Without the bridge, manager↔CLI collaboration requires manual directory navigation, filename construction, JSON copying, and housekeeping. Every round-trip is error-prone and slow.
+## Federation position
 
-The tool reduces the loop to:
-
-```
-1. CLI reports  →  bacp-bridge next-report
-2. Human copies  →  pastes to ChatGPT
-3. ChatGPT responds  →  pipes to:  echo '<json>' | bacp-bridge write-instruction
-4. CLI reads     →  bacp-bridge next-instruction
-5. CLI acts      →  bacp-bridge ack <id>
-6. Repeat
-```
-
-No directory navigation. No filename construction. No manual archiving.
-
----
-
-## The Control Loop (5 Steps)
-
-```
-INSTRUCT  echo '{"command":"...","instruction":"...","model_selection":{...}}' \
-            | ./scripts/bacp-bridge write-instruction
-
-READ      ./scripts/bacp-bridge next-instruction
-
-ACK       ./scripts/bacp-bridge ack <id>
-
-REPORT    echo '{"project":"...","task":{...},"repo":{...},"next_recommended_action":"..."}' \
-            | ./scripts/bacp-bridge write-report
-
-REVIEW    ./scripts/bacp-bridge next-report
+```text
+Bragi-AgentCP (frozen)
+  may inform:
+    - historical agent-control design
+  does not produce:
+    - active productization-agent roles
+    - federation reviewer decisions
+    - autonomous continuation authority
 ```
 
-That is the entire loop. Each step is one command.
+## Current state (honest)
 
----
+Frozen. Do not add new control-plane work here.
 
-### Ack vs `--ack-source`: When to Use Each
+## Getting started (or: why you can't)
 
-Use `ack <id>` after reading an instruction but before starting work. This archives the instruction so the queue stays clean.
+Do not run this repo as the active federation mechanism. Use:
 
-Use `write-report --ack-source <id>` when the instruction and report form one unit — the source is archived automatically when the report is written.
-
-**Do not use both.** If you `ack` an instruction and later pass the same ID to `--ack-source`, the second call produces a harmless warning ("source not found") because the file is already archived. Pick one path per instruction.
-
----
-
-## Available Commands
-
-| Command | Purpose |
-|---------|---------|
-| `status [--json]` | Show bridge health and queue counts |
-| `list-instructions [--json]` | List all pending manager instructions |
-| `list-reports [--json]` | List all pending executor reports |
-| `next-report [--json]` | Show oldest pending CLI-to-manager report |
-| `next-instruction [--json]` | Show oldest pending manager-to-CLI instruction |
-| `write-instruction [--archive-source <id>]` | Write validated manager instruction from stdin |
-| `write-report [--ack-source <id>]` | Write executor status report from stdin to outbox |
-| `decisions [--json]` | Show pending/answered decisions |
-| `archive <id>` | Move processed message to archive |
-| `archive-all <queue>` | Archive all pending messages in a queue (reports, instructions, decisions) |
-| `ack <id>` | Archive a consumed message |
-| `task <project> <description>` | Create a new task — kicks off the control loop |
-| `activity [--lines <N>] [--follow]` | Show recent agent activity log |
-| `watch` | Live agent dashboard (queue, heartbeats, activity, alerts) |
-| `stop` | Halt all bridge operations (confirmation required) |
-| `resume` | Reactivate bridge operations (confirmation required) |
-
-Flags:
-- `--json` on display commands outputs machine-parseable JSON
-- `--archive-source <id>` on write-instruction archives the source report after writing
-
-Environment: `BACP_ROOT` overrides the default bridge path (`~/.bragi/agent-control-plane/`).
-
-Use `bacp-bridge task <project> "<description>"` to ingress a new task. This creates a report in outbox/ and signals the Manager, which writes an instruction for the Executor — the full automated loop.
-
-```
-bacp-bridge task portal "Fix the login button styling"
+```bash
+cd /tmp/bragi-platform-pr319
+pnpm agents:validate
+pnpm autonomous:status
 ```
 
-The `autocontrol` command automates the INSTRUCT step: it reads the oldest pending report, prints a manager prompt with the full report content, accepts a manager instruction from stdin, validates it, and writes it to the inbox — eliminating the first copy/paste handoff. Pass `--archive-report` to archive the source report after writing.
+## Contracts and authority
 
-### Using `autocontrol --watch`
+Current authority lives in:
 
-`--watch` runs the relay continuously: it polls `outbox/cli-to-manager/` every N seconds (default: 5), and when a report appears it prints the manager prompt and waits for your instruction. Start it with `bacp-bridge autocontrol --watch`. To adjust the poll interval, pass `--interval <seconds>`. Use `--archive-report` to clean up source reports automatically after each relay. Stop watch mode safely with Ctrl+C — it exits cleanly and logs completion. The STOP file also halts watch mode before any action, preserving the kill switch as the last line of defense.
+- `bragi-platform/config/coordination/`
+- `bragi-platform/tools/agents/productization-agent-mechanism.mjs`
+- `bragi-platform/scripts/autonomous-continuation-flag.mjs`
+- `bragi-platform/governance/audit-week/reviews/`
 
----
+No gate can be moved from this repository.
 
-## Current Limitations
+## What this does NOT do
 
-- **Human clipboard required.** The ChatGPT manager and CLI executor cannot communicate directly. A human must copy/paste between terminal and ChatGPT. (Phase 3/4 automation is future work.)
-- **Manual validation.** JSON structure is checked, but full schema validation against the 4 schema files is not yet implemented.
-- **No automated polling.** The CLI checks for instructions at conversation boundaries, not on a timer.
-- **No dashboard.** Command output is terminal-only. A UI reads the same filesystem.
+- It does not define current autonomous-run policy.
+- It does not record current reviewer decisions.
+- It does not authorize source movement or gate execution.
 
----
+Misuse to avoid: do not use this repository's queue semantics to bypass
+`bragi-platform` hard stops.
 
-## Explicitly Out of Scope
+## Ownership and escalation
 
-| Area | Status |
-|------|--------|
-| Project discovery | Stopped. Not active unless explicitly instructed. |
-| External project changes | Never modify Router, Portal, AppKit, MSDK. |
-| GitHub integration | The bridge does not push, PR, or review. |
-| API integration | No outbound API calls from the bridge. |
-| Dashboard / UI | Terminal-only. Future consideration. |
-| Watcher health monitoring | Removed from active scope. |
-| bragi-vault or Obsidian Vault | Never read or modified by the bridge. |
+Bubble owner: Platform governance bubble.
 
----
+Escalation path:
 
-## Documentation
+```text
+Platform governance bubble -> Pouria federation gate -> CEO checkpoint
+```
 
-| Document | What It Covers |
-|----------|---------------|
-| `docs/manager-control-tool-spec.md` | Full tool specification, workflow, schemas, security |
-| `docs/manager-control-tool-implementation-plan.md` | Build plan, remaining gaps, acceptance criteria |
-| `docs/chatgpt-cli-bridge.md` | Original bridge architecture (superseded by tool spec) |
-| `docs/manager-control-loop.md` | Manager authority model, 13 commands, verification loop |
-| `docs/phase-2-bridge-helper.md` | Bridge helper design (implementation complete) |
-| `schemas/manager-control/` | 4 JSON schemas (project-state, executor-report, manager-instruction, decision-request) |
+## See also
+
+- `bragi-platform/governance/federation-status.md`
+- `bragi-platform/config/coordination/`
